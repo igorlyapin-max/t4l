@@ -16,7 +16,7 @@ services:
       - t4l-postgres:/var/lib/postgresql/data
 
   api:
-    image: ${T4L_API_IMAGE:-ghcr.io/igorlyapin-max/t4l-api:v00.00.00.01}
+    image: ${T4L_API_IMAGE:-ghcr.io/igorlyapin-max/t4l-api:v00.00.00.02}
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
