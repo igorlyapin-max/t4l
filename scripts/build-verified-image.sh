@@ -30,11 +30,12 @@ trap cleanup EXIT
 phase() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1"; }
 
 phase "export Docker-built runtime artifact"
-docker build --network="${build_network}" --target artifact-export --output "type=local,dest=${work_dir}/artifact" .
+docker build --network="${build_network}" --file server/src/T4L.Api/Dockerfile \
+  --target artifact-export --output "type=local,dest=${work_dir}/artifact" .
 artifact_digest="$(sha256sum "${work_dir}/artifact/T4L.Api.dll" | awk '{print $1}')"
 
 phase "build verified image"
-docker build --network="${build_network}" \
+docker build --network="${build_network}" --file server/src/T4L.Api/Dockerfile \
   --build-arg "T4L_BUILD_VERSION=${version}" \
   --build-arg "T4L_GIT_REVISION=${revision}" \
   --build-arg T4L_SOURCE_CLEAN=true \
