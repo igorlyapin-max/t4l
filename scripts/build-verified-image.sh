@@ -20,7 +20,7 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-work_dir="$(mktemp -d)"
+work_dir="$(mktemp -d "${repo_root}/.t4l-image-build.XXXXXX")"
 container_name="t4l-verify-${revision:0:12}"
 cleanup() {
   docker rm -f "${container_name}" >/dev/null 2>&1 || true

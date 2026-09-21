@@ -15,6 +15,7 @@ local.properties
 .env.*
 !.env.example
 artifacts/
+.t4l-image-build.*
 /AGENTS.md
 /.agents/
 /.codex/

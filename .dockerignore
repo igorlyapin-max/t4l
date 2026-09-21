@@ -9,6 +9,7 @@ android-app/.kotlin
 android-app/local.properties
 *.apk
 *.aab
+.t4l-image-build.*
 .agents
 .codex
 AGENTS.md
