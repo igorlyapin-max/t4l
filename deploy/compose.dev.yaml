@@ -1,0 +1,21 @@
+services:
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: t4l_dev_only
+
+  api:
+    image: t4l-api:unverified-local
+    build:
+      context: ..
+      dockerfile: server/src/T4L.Api/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      T4L__DevelopmentInsecure: "true"
+      T4L__AllowInsecureLan: "true"
+      ConnectionStrings__T4L: Host=postgres;Port=5432;Database=t4l;Username=t4l;Password=t4l_dev_only
+      Oidc__Authority: null
+      Oidc__Audience: null
+      OTEL_EXPORTER_OTLP_ENDPOINT: null
+      Observability__RequireExternalSink: "false"
+    ports: !override
+      - "${T4L_API_BIND_ADDRESS:-192.168.202.35}:${T4L_API_PORT:-5099}:8080"

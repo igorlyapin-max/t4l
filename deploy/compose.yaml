@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${T4L_POSTGRES_DB:-t4l}
+      POSTGRES_USER: ${T4L_POSTGRES_USER:-t4l}
+      POSTGRES_PASSWORD: ${T4L_POSTGRES_PASSWORD:-REPLACE_POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${T4L_POSTGRES_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U t4l -d t4l"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - t4l-postgres:/var/lib/postgresql/data
+
+  api:
+    image: ${T4L_API_IMAGE:-ghcr.io/igorlyapin-max/t4l-api:v00.00.00.01}
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__T4L: Host=postgres;Port=5432;Database=${T4L_POSTGRES_DB:-t4l};Username=${T4L_POSTGRES_USER:-t4l};Password=${T4L_POSTGRES_PASSWORD:-REPLACE_POSTGRES_PASSWORD}
+      Oidc__Authority: ${T4L_OIDC_AUTHORITY:-https://REPLACE_OIDC_AUTHORITY/}
+      Oidc__Audience: ${T4L_OIDC_AUDIENCE:-t4l-api}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${T4L_OTLP_ENDPOINT:-http://otel-collector:4317}
+      Observability__RequireExternalSink: "true"
+      DebugLogging__Enabled: ${T4L_DEBUG_LOGGING_ENABLED:-false}
+      DebugLogging__Level: ${T4L_DEBUG_LOGGING_LEVEL:-Basic}
+    ports:
+      - "${T4L_API_BIND_ADDRESS:-127.0.0.1}:${T4L_API_PORT:-5099}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8080/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+
+volumes:
+  t4l-postgres:

@@ -1,0 +1,10 @@
+root = true
+
+[*.{cs,kt,kts}]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+[server/src/T4L.Api/Persistence/Migrations/*.cs]
+# EF-generated CreateIndex calls intentionally use generated column arrays.
+dotnet_diagnostic.CA1861.severity = none

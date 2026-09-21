@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="server/src/T4L.Api/T4L.Api.csproj" />
+  <Project Path="server/tests/T4L.Api.Tests/T4L.Api.Tests.csproj" />
+</Solution>
