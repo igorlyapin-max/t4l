@@ -166,3 +166,51 @@ data class ConflictRow(
     val operation: String = "upsert",
     val errorCode: String? = null,
 )
+
+@Entity(tableName = "user_profiles")
+data class UserProfileRow(
+    @PrimaryKey val userId: String,
+    val birthDateEpochDay: Long? = null,
+    val lifeExpectancyYears: Double? = null,
+    val revision: Long = 0,
+    val avatarRevision: Long = 0,
+    val hasAvatar: Boolean = false,
+    val localAvatarPath: String? = null,
+    val updatedAtEpochMs: Long = 0,
+)
+
+@Entity(tableName = "profile_mutations", indices = [Index("userId")])
+data class ProfileMutationRow(
+    @PrimaryKey val clientMutationId: String,
+    val userId: String,
+    val baseRevision: Long,
+    val birthDateEpochDay: Long?,
+    val lifeExpectancyYears: Double?,
+    val changedFields: String,
+    val createdAtEpochMs: Long,
+    val baseSnapshotJson: String? = null,
+)
+
+@Entity(tableName = "avatar_mutations", indices = [Index("userId")])
+data class AvatarMutationRow(
+    @PrimaryKey val clientMutationId: String,
+    val userId: String,
+    val baseRevision: Long,
+    val operation: String,
+    val localPath: String?,
+    val createdAtEpochMs: Long,
+)
+
+@Entity(tableName = "personal_conflicts", indices = [Index("userId")])
+data class PersonalConflictRow(
+    @PrimaryKey val clientMutationId: String,
+    val userId: String,
+    val kind: String,
+    val baseRevision: Long,
+    val serverRevision: Long,
+    val localPayloadJson: String,
+    val serverPayloadJson: String,
+    val localFilePath: String? = null,
+    val serverFilePath: String? = null,
+    val createdAtEpochMs: Long,
+)

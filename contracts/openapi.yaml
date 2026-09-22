@@ -17,6 +17,91 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Bootstrap' }
+  /me/profile:
+    get:
+      operationId: getProfile
+      responses:
+        '200':
+          description: Current user's synchronized profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+    patch:
+      operationId: patchProfile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserProfilePatch' }
+      responses:
+        '200':
+          description: Updated profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+        '409':
+          description: Revision conflict; body contains current server profile
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UserProfile' }
+  /me/profile/avatar:
+    get:
+      operationId: getProfileAvatar
+      responses:
+        '200':
+          description: Canonical JPEG profile image
+          headers:
+            ETag: { schema: { type: string }, description: Quoted avatar revision }
+            Cache-Control: { schema: { type: string } }
+            X-Content-Type-Options: { schema: { type: string, const: nosniff } }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '404': { description: No profile image }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      operationId: putProfileAvatar
+      parameters:
+        - { name: clientMutationId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: baseRevision, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
+      requestBody:
+        required: true
+        content:
+          image/jpeg: { schema: { type: string, format: binary, maxLength: 2097152 } }
+          image/png: { schema: { type: string, format: binary, maxLength: 2097152 } }
+          image/webp: { schema: { type: string, format: binary, maxLength: 2097152 } }
+      responses:
+        '200':
+          description: Avatar updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvatarMutationResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '409':
+          description: Avatar revision conflict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvatarMutationResponse' }
+        '413': { $ref: '#/components/responses/PayloadTooLarge' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      operationId: deleteProfileAvatar
+      parameters:
+        - { name: clientMutationId, in: query, required: true, schema: { type: string, format: uuid } }
+        - { name: baseRevision, in: query, required: true, schema: { type: integer, format: int64, minimum: 0 } }
+      responses:
+        '200':
+          description: Avatar removed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvatarMutationResponse' }
+        '409':
+          description: Avatar revision conflict
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AvatarMutationResponse' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
   /workspaces/{workspaceId}/category-trees:
     get:
       operationId: listCategoryTrees
@@ -161,6 +246,22 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  responses:
+    Unauthorized:
+      description: Authentication is required or the bearer token is invalid
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
+    InvalidRequest:
+      description: Request validation failed
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
+    PayloadTooLarge:
+      description: Request body exceeds the supported limit
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/ProblemDetails' }
   parameters:
     WorkspaceId:
       name: workspaceId
@@ -193,6 +294,41 @@ components:
         createdAt: { type: string, format: date-time }
         updatedAt: { type: string, format: date-time }
         deletedAt: { type: [string, 'null'], format: date-time }
+    UserProfile:
+      type: object
+      required: [revision, avatarRevision, hasAvatar]
+      properties:
+        birthDate: { type: [string, 'null'], format: date }
+        lifeExpectancyYears: { type: [number, 'null'], minimum: 0.1, maximum: 130 }
+        revision: { type: integer, format: int64, minimum: 0 }
+        avatarRevision: { type: integer, format: int64, minimum: 0 }
+        hasAvatar: { type: boolean }
+    UserProfilePatch:
+      type: object
+      required: [clientMutationId, baseRevision, changedFields]
+      properties:
+        clientMutationId: { type: string, format: uuid }
+        baseRevision: { type: integer, format: int64, minimum: 0 }
+        changedFields:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items: { type: string, enum: [birthDate, lifeExpectancyYears] }
+        birthDate: { type: [string, 'null'], format: date }
+        lifeExpectancyYears: { type: [number, 'null'], minimum: 0.1, maximum: 130 }
+    AvatarMutationResponse:
+      type: object
+      required: [avatarRevision, hasAvatar]
+      properties:
+        avatarRevision: { type: integer, format: int64, minimum: 0 }
+        hasAvatar: { type: boolean }
+    ProblemDetails:
+      type: object
+      properties:
+        status: { type: [integer, 'null'] }
+        title: { type: [string, 'null'] }
+        detail: { type: [string, 'null'] }
+        correlationId: { type: [string, 'null'] }
     CategoryTree:
       allOf:
         - $ref: '#/components/schemas/SyncMetadata'

@@ -49,6 +49,14 @@ The Android server URL and sync delay are editable in `Settings > Network`. A co
 
 Settings are split into `Network`, `Backup`, `Security`, `Diagnostics`, and `Language`. Language is an app-local English/Russian choice; before the first explicit choice Android follows the system locale.
 
+Backup export/import reports processing, completion, invalid-password, invalid-file, storage, network, and authorization outcomes without exposing raw server errors. Conflict resolution under `Settings > Diagnostics > Sync issues` compares the local and server values before either version can be confirmed; raw mutation JSON remains an advanced diagnostic action.
+
+`Home` is the Android start screen. It contains a device-local Tomato timer with simple and classic four-round modes, plus a statistical life countdown. The user-level profile (`/api/v1/me/profile`) and cropped avatar are cached offline and synchronized independently from the selected workspace. Disjoint profile-field edits are rebased automatically; overlapping profile edits and concurrent avatar edits require an explicit choice in `Settings > Diagnostics > Sync issues`. The active timer is deliberately not synchronized between devices and does not create `Track` events.
+
+Background timer completion uses a foreground service and exact alarm when Android grants that access. If exact alarms are disabled, the UI warns that the completion signal can be delayed. Android 13+ also requests notification permission; the running state remains based on the persisted deadline rather than notification delivery.
+
+If notification permission is denied, the timer still starts in degraded mode. The Home screen keeps a warning visible while the timer is active and links to the application notification settings because a background completion signal may be missed.
+
 Release builds accept HTTPS only. Debug builds additionally accept literal loopback or RFC1918 HTTP addresses; arbitrary hostnames and public HTTP addresses are rejected by `ServerUrlPolicy`.
 
 ## Security boundary
@@ -58,7 +66,7 @@ Release builds accept HTTPS only. Debug builds additionally accept literal loopb
 ## Schema compatibility
 
 - Server schema v1 is intentionally unsupported. If startup reports `legacy_schema_not_supported`, recreate the development database instead of applying a lossy conversion.
-- Android database v1 is reset destructively. Database v2 migrates to v3 while preserving current entities and sync conflicts.
+- Android database v1 is reset destructively. Database v2 migrates to v3 while preserving current entities and sync conflicts; v3 migrates to v4 with the user profile cache and offline profile/avatar queues; v4 migrates to v5 with profile base snapshots and explicit personal conflicts.
 - Backup import accepts only `formatVersion: 2` and validates the complete graph before a single transactional import.
 
 ## Product model
@@ -72,5 +80,6 @@ Release builds accept HTTPS only. Debug builds additionally accept literal loopb
 ## Current MVP boundaries
 
 - Stale-revision conflicts are retained locally and resolved explicitly with server, local, or edited payload choices; last-write-wins is not used. Natural-key budget allocations use a deterministic cross-client identity and conflicting revisions expose the canonical entity ID.
+- Uploaded avatars are decoded, dimension-limited, metadata-stripped, resized to at most 1024 px, and stored as canonical JPEG. Client diagnostics are disabled by default; `Basic` emits the fixed operational event/attribute allowlist, while temporary `Verbose` additionally emits bounded phase/status context through logcat, rotating local NDJSON, and the authenticated server sink.
 - The Android HTTP DTOs currently mirror the OpenAPI contract manually; generated-client drift enforcement is still pending.
-- Recurring plans, notifications, drag-and-drop ordering, automatic scheduling, task budgeting, and archive restoration UI are outside the current iteration.
+- Recurring plans, task/deadline notifications, drag-and-drop ordering, automatic scheduling, task budgeting, and archive restoration UI are outside the current iteration.

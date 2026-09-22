@@ -5,6 +5,7 @@ import app.t4l.data.ApiClient
 import app.t4l.data.DeviceIdentity
 import app.t4l.data.T4LDatabase
 import app.t4l.data.T4LRepository
+import app.t4l.data.ProfileRepository
 import app.t4l.data.SyncStateStore
 import okhttp3.OkHttpClient
 
@@ -19,6 +20,8 @@ class T4LApplication : Application() {
         private set
     lateinit var repository: T4LRepository
         private set
+    lateinit var profileRepository: ProfileRepository
+        private set
     lateinit var logger: StructuredLogger
         private set
     lateinit var appLock: AppLockSettings
@@ -26,6 +29,8 @@ class T4LApplication : Application() {
     lateinit var syncStateStore: SyncStateStore
         private set
     lateinit var authManager: AuthManager
+        private set
+    lateinit var pomodoroStore: PomodoroStore
         private set
 
     override fun onCreate() {
@@ -40,12 +45,15 @@ class T4LApplication : Application() {
         }.build()
         apiClient = ApiClient(http = http, baseUrlProvider = { serverSettings.baseUrl })
         syncStateStore = SyncStateStore()
-        repository = T4LRepository(database, DeviceIdentity(this), syncStateStore)
+        pomodoroStore = PomodoroStore(this)
+        val identity = DeviceIdentity(this)
+        repository = T4LRepository(database, identity, syncStateStore)
+        profileRepository = ProfileRepository(this, database, apiClient, identity, actorInitiallyResolved = !authManager.enabled)
         logger = StructuredLogger(this)
         appLock = AppLockSettings(this)
         syncScheduler = SyncScheduler(this, serverSettings)
         logger.event("application_started")
         syncScheduler.cancelObsoleteWork()
-        syncScheduler.scheduleColdStart()
+        if (!authManager.enabled || authManager.authorized) syncScheduler.scheduleColdStart()
     }
 }

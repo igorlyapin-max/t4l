@@ -55,10 +55,10 @@ namespace T4L.Api.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("WorkspaceId", "UpdatedAt");
+
                     b.HasIndex("WorkspaceId", "PlanId", "CategoryId")
                         .IsUnique();
-
-                    b.HasIndex("WorkspaceId", "UpdatedAt");
 
                     b.ToTable("BudgetAllocations");
                 });
@@ -313,11 +313,13 @@ namespace T4L.Api.Persistence.Migrations
 
             modelBuilder.Entity("T4L.Api.Domain.ProcessedMutationEntity", b =>
                 {
-                    b.Property<Guid>("ClientMutationId")
-                        .ValueGeneratedOnAdd()
+                    b.Property<Guid>("ClientId")
                         .HasColumnType("uuid");
 
-                    b.Property<Guid>("ClientId")
+                    b.Property<Guid>("WorkspaceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ClientMutationId")
                         .HasColumnType("uuid");
 
                     b.Property<DateTimeOffset>("ProcessedAt")
@@ -327,12 +329,31 @@ namespace T4L.Api.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<Guid>("WorkspaceId")
-                        .HasColumnType("uuid");
-
                     b.HasKey("ClientId", "WorkspaceId", "ClientMutationId");
 
                     b.ToTable("ProcessedMutations");
+                });
+
+            modelBuilder.Entity("T4L.Api.Domain.ProcessedProfileMutationEntity", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ClientMutationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Kind")
+                        .HasColumnType("text");
+
+                    b.Property<DateTimeOffset>("ProcessedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<long>("ResultRevision")
+                        .HasColumnType("bigint");
+
+                    b.HasKey("UserId", "ClientMutationId", "Kind");
+
+                    b.ToTable("ProcessedProfileMutations");
                 });
 
             modelBuilder.Entity("T4L.Api.Domain.TaskCommentEntity", b =>
@@ -527,6 +548,47 @@ namespace T4L.Api.Persistence.Migrations
                     b.ToTable("Users");
                 });
 
+            modelBuilder.Entity("T4L.Api.Domain.ProcessedProfileMutationEntity", b =>
+                {
+                    b.HasOne("T4L.Api.Domain.UserEntity", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("T4L.Api.Domain.UserProfileEntity", b =>
+                {
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<byte[]>("AvatarContent")
+                        .HasColumnType("bytea");
+
+                    b.Property<string>("AvatarContentType")
+                        .HasColumnType("text");
+
+                    b.Property<long>("AvatarRevision")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateOnly?>("BirthDate")
+                        .HasColumnType("date");
+
+                    b.Property<decimal?>("LifeExpectancyYears")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("UserId");
+
+                    b.ToTable("UserProfiles");
+                });
+
             modelBuilder.Entity("T4L.Api.Domain.WorkspaceEntity", b =>
                 {
                     b.Property<Guid>("Id")
@@ -556,6 +618,15 @@ namespace T4L.Api.Persistence.Migrations
                     b.HasOne("T4L.Api.Domain.WorkspaceEntity", null)
                         .WithMany()
                         .HasForeignKey("WorkspaceId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("T4L.Api.Domain.UserProfileEntity", b =>
+                {
+                    b.HasOne("T4L.Api.Domain.UserEntity", null)
+                        .WithOne()
+                        .HasForeignKey("T4L.Api.Domain.UserProfileEntity", "UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
                 });

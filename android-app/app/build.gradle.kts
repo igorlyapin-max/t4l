@@ -68,7 +68,16 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
-    testOptions { unitTests.isIncludeAndroidResources = true }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+        managedDevices.localDevices {
+            maybeCreate("pixel2Api35").apply {
+                device = "Pixel 2"
+                apiLevel = 35
+                systemImageSource = "aosp-atd"
+            }
+        }
+    }
     sourceSets.getByName("androidTest").assets.srcDir("$projectDir/schemas")
     lint {
         abortOnError = true
@@ -89,6 +98,7 @@ dependencies {
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.0")
+    implementation("androidx.navigation:navigation-compose:2.9.0")
     implementation("androidx.room:room-runtime:2.7.1")
     implementation("androidx.room:room-ktx:2.7.1")
     kapt("androidx.room:room-compiler:2.7.1")

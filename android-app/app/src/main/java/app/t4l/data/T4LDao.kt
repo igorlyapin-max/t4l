@@ -8,6 +8,10 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface T4LDao {
+    @Query("SELECT * FROM user_profiles WHERE userId=:userId")
+    fun observeProfile(userId: String): Flow<UserProfileRow?>
+    @Query("SELECT * FROM personal_conflicts WHERE userId=:userId ORDER BY createdAtEpochMs")
+    fun observePersonalConflicts(userId: String): Flow<List<PersonalConflictRow>>
     @Query("SELECT * FROM category_trees WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL AND archived=0 ORDER BY sortOrder,name")
     fun observeCategoryTrees(workspaceId: String): Flow<List<CategoryTreeRow>>
     @Query("SELECT * FROM categories WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL ORDER BY categoryTreeId,sortOrder,name")
@@ -43,6 +47,10 @@ interface T4LDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putOutbox(row: OutboxRow)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putConflict(row: ConflictRow)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putCursor(row: SyncCursorRow)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putProfile(row: UserProfileRow)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putProfileMutation(row: ProfileMutationRow)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putAvatarMutation(row: AvatarMutationRow)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putPersonalConflict(row: PersonalConflictRow)
 
     @Query("SELECT * FROM outbox WHERE workspaceId=:workspaceId ORDER BY createdAtEpochMs LIMIT :limit") suspend fun pendingMutations(workspaceId: String, limit: Int = 100): List<OutboxRow>
     @Query("SELECT * FROM outbox WHERE clientMutationId=:id") suspend fun pendingMutation(id: String): OutboxRow?
@@ -55,6 +63,18 @@ interface T4LDao {
     @Query("DELETE FROM conflicts WHERE clientMutationId=:id") suspend fun deleteConflict(id: String)
     @Query("UPDATE outbox SET attemptCount=0,lastError=NULL WHERE clientMutationId=:id") suspend fun retryMutation(id: String)
     @Query("SELECT * FROM sync_cursors WHERE workspaceId=:workspaceId") suspend fun cursor(workspaceId: String): SyncCursorRow?
+    @Query("SELECT * FROM user_profiles WHERE userId=:userId") suspend fun profile(userId: String): UserProfileRow?
+    @Query("SELECT * FROM profile_mutations WHERE userId=:userId ORDER BY createdAtEpochMs") suspend fun profileMutations(userId: String): List<ProfileMutationRow>
+    @Query("SELECT * FROM avatar_mutations WHERE userId=:userId ORDER BY createdAtEpochMs") suspend fun avatarMutations(userId: String): List<AvatarMutationRow>
+    @Query("DELETE FROM profile_mutations WHERE userId=:userId") suspend fun deleteProfileMutations(userId: String)
+    @Query("DELETE FROM avatar_mutations WHERE userId=:userId") suspend fun deleteAvatarMutations(userId: String)
+    @Query("DELETE FROM profile_mutations WHERE clientMutationId=:id") suspend fun deleteProfileMutation(id: String)
+    @Query("DELETE FROM avatar_mutations WHERE clientMutationId=:id") suspend fun deleteAvatarMutation(id: String)
+    @Query("SELECT * FROM personal_conflicts WHERE clientMutationId=:id") suspend fun personalConflict(id: String): PersonalConflictRow?
+    @Query("SELECT * FROM personal_conflicts WHERE userId=:userId ORDER BY createdAtEpochMs") suspend fun personalConflicts(userId: String): List<PersonalConflictRow>
+    @Query("DELETE FROM personal_conflicts WHERE clientMutationId=:id") suspend fun deletePersonalConflict(id: String)
+    @Query("DELETE FROM personal_conflicts WHERE userId=:userId") suspend fun deletePersonalConflicts(userId: String)
+    @Query("DELETE FROM user_profiles WHERE userId=:userId") suspend fun deleteProfile(userId: String)
 
     @Query("SELECT * FROM category_trees WHERE id=:id") suspend fun categoryTree(id: String): CategoryTreeRow?
     @Query("SELECT * FROM categories WHERE id=:id") suspend fun category(id: String): CategoryRow?

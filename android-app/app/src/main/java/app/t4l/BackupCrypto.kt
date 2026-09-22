@@ -19,36 +19,41 @@ object BackupCrypto {
     private val random = SecureRandom()
 
     fun encrypt(plainText: String, password: CharArray): String {
-        require(password.isNotEmpty()) { "Backup password is required." }
-        val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
-        val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
-        val key = deriveKey(password, salt)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-        cipher.updateAAD(PREFIX.toByteArray(Charsets.UTF_8))
-        val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
-        password.fill('\u0000')
-        val payload = ByteBuffer.allocate(salt.size + nonce.size + encrypted.size)
-            .put(salt).put(nonce).put(encrypted).array()
-        return PREFIX + Base64.getEncoder().encodeToString(payload)
+        try {
+            require(password.isNotEmpty()) { "Backup password is required." }
+            val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
+            val nonce = ByteArray(NONCE_BYTES).also(random::nextBytes)
+            val key = deriveKey(password, salt)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
+            cipher.updateAAD(PREFIX.toByteArray(Charsets.UTF_8))
+            val encrypted = cipher.doFinal(plainText.toByteArray(Charsets.UTF_8))
+            val payload = ByteBuffer.allocate(salt.size + nonce.size + encrypted.size)
+                .put(salt).put(nonce).put(encrypted).array()
+            return PREFIX + Base64.getEncoder().encodeToString(payload)
+        } finally {
+            password.fill('\u0000')
+        }
     }
 
     fun decrypt(container: String, password: CharArray): String {
-        require(container.startsWith(PREFIX)) { "Unsupported backup format." }
-        require(password.isNotEmpty()) { "Backup password is required." }
-        val payload = Base64.getDecoder().decode(container.removePrefix(PREFIX))
-        require(payload.size > SALT_BYTES + NONCE_BYTES) { "Corrupted backup." }
-        val buffer = ByteBuffer.wrap(payload)
-        val salt = ByteArray(SALT_BYTES).also(buffer::get)
-        val nonce = ByteArray(NONCE_BYTES).also(buffer::get)
-        val encrypted = ByteArray(buffer.remaining()).also(buffer::get)
-        val key = deriveKey(password, salt)
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
-        cipher.updateAAD(PREFIX.toByteArray(Charsets.UTF_8))
-        val result = cipher.doFinal(encrypted).toString(Charsets.UTF_8)
-        password.fill('\u0000')
-        return result
+        try {
+            require(container.startsWith(PREFIX)) { "Unsupported backup format." }
+            require(password.isNotEmpty()) { "Backup password is required." }
+            val payload = Base64.getDecoder().decode(container.removePrefix(PREFIX))
+            require(payload.size > SALT_BYTES + NONCE_BYTES) { "Corrupted backup." }
+            val buffer = ByteBuffer.wrap(payload)
+            val salt = ByteArray(SALT_BYTES).also(buffer::get)
+            val nonce = ByteArray(NONCE_BYTES).also(buffer::get)
+            val encrypted = ByteArray(buffer.remaining()).also(buffer::get)
+            val key = deriveKey(password, salt)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, nonce))
+            cipher.updateAAD(PREFIX.toByteArray(Charsets.UTF_8))
+            return cipher.doFinal(encrypted).toString(Charsets.UTF_8)
+        } finally {
+            password.fill('\u0000')
+        }
     }
 
     fun isEncrypted(value: String): Boolean = value.startsWith(PREFIX)

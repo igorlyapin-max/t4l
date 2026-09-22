@@ -18,9 +18,11 @@ import kotlinx.serialization.json.jsonPrimitive
 class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val app = applicationContext as T4LApplication
+        val startedAt = System.currentTimeMillis()
         app.syncStateStore.syncing()
+        app.logger.verboseEvent("sync_started", mapOf("phase" to "sync"))
         return runCatching { sync(app) }.fold(
-            { app.syncStateStore.success(); app.logger.event("sync_succeeded"); Result.success() },
+            { app.syncStateStore.success(); app.logger.event("sync_succeeded", mapOf("durationMs" to (System.currentTimeMillis() - startedAt).toString())); Result.success() },
             { error -> app.syncStateStore.retry(error.javaClass.simpleName); app.logger.event("sync_retry", mapOf("errorType" to error.javaClass.simpleName)); Result.retry() },
         )
     }
@@ -29,6 +31,9 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val bootstrap = app.apiClient.bootstrap()
         app.repository.updateBootstrap(bootstrap.userId, bootstrap.defaultWorkspaceId,
             bootstrap.workspaces.map { WorkspaceOption(it.workspaceId, it.name, it.role) })
+        val removedPersonalItems = app.profileRepository.bindUser(bootstrap.userId)
+        if (removedPersonalItems > 0) app.logger.event("profile_actor_rebound", mapOf("pendingCount" to removedPersonalItems.toString()))
+        app.profileRepository.sync(bootstrap.userId)
         val dao = app.database.dao(); val pending = dao.pendingMutations(app.repository.workspaceId)
         if (pending.isNotEmpty()) {
             val response = app.apiClient.push(PushBody(app.repository.clientId, pending.map { it.toMutation() }))

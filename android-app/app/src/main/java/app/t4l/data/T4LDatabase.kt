@@ -19,8 +19,9 @@ class DatabaseConverters {
         CategoryTreeRow::class, CategoryRow::class, EventRow::class, TaskRow::class,
         TaskCommentRow::class, PlanRow::class, BudgetAllocationRow::class, PlannedEventRow::class,
         OutboxRow::class, SyncCursorRow::class, ConflictRow::class,
+        UserProfileRow::class, ProfileMutationRow::class, AvatarMutationRow::class, PersonalConflictRow::class,
     ],
-    version = 3,
+    version = 5,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -32,7 +33,25 @@ abstract class T4LDatabase : RoomDatabase() {
             context.applicationContext,
             T4LDatabase::class.java,
             "t4l.db",
-        ).addMigrations(MIGRATION_2_3).fallbackToDestructiveMigrationFrom(true, 1).build()
+        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).fallbackToDestructiveMigrationFrom(true, 1).build()
+
+        val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE profile_mutations ADD COLUMN baseSnapshotJson TEXT")
+                db.execSQL("CREATE TABLE IF NOT EXISTS personal_conflicts (clientMutationId TEXT NOT NULL PRIMARY KEY, userId TEXT NOT NULL, kind TEXT NOT NULL, baseRevision INTEGER NOT NULL, serverRevision INTEGER NOT NULL, localPayloadJson TEXT NOT NULL, serverPayloadJson TEXT NOT NULL, localFilePath TEXT, serverFilePath TEXT, createdAtEpochMs INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_personal_conflicts_userId ON personal_conflicts(userId)")
+            }
+        }
+
+        val MIGRATION_3_4 = object : Migration(3, 4) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS user_profiles (userId TEXT NOT NULL PRIMARY KEY, birthDateEpochDay INTEGER, lifeExpectancyYears REAL, revision INTEGER NOT NULL, avatarRevision INTEGER NOT NULL, hasAvatar INTEGER NOT NULL, localAvatarPath TEXT, updatedAtEpochMs INTEGER NOT NULL)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS profile_mutations (clientMutationId TEXT NOT NULL PRIMARY KEY, userId TEXT NOT NULL, baseRevision INTEGER NOT NULL, birthDateEpochDay INTEGER, lifeExpectancyYears REAL, changedFields TEXT NOT NULL, createdAtEpochMs INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_profile_mutations_userId ON profile_mutations(userId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS avatar_mutations (clientMutationId TEXT NOT NULL PRIMARY KEY, userId TEXT NOT NULL, baseRevision INTEGER NOT NULL, operation TEXT NOT NULL, localPath TEXT, createdAtEpochMs INTEGER NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_avatar_mutations_userId ON avatar_mutations(userId)")
+            }
+        }
 
         val MIGRATION_2_3 = object : Migration(2, 3) {
             override fun migrate(db: SupportSQLiteDatabase) {

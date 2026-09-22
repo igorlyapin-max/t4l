@@ -38,7 +38,40 @@ class T4LDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate3To4AddsOfflineProfileQueues() {
+        helper.createDatabase(TEST_DB_V4, 3).close()
+
+        helper.runMigrationsAndValidate(TEST_DB_V4, 4, true, T4LDatabase.MIGRATION_3_4).use { db ->
+            db.execSQL("INSERT INTO user_profiles VALUES ('user-1',10000,78.6,2,1,1,NULL,1000)")
+            db.query("SELECT birthDateEpochDay,lifeExpectancyYears FROM user_profiles WHERE userId='user-1'").use {
+                check(it.moveToFirst())
+                assertEquals(10000L, it.getLong(0))
+                assertEquals(78.6, it.getDouble(1), 0.001)
+            }
+        }
+    }
+
+    @Test
+    fun migrate4To5PreservesPendingProfileAndAddsPersonalConflicts() {
+        helper.createDatabase(TEST_DB_V5, 4).apply {
+            execSQL("INSERT INTO profile_mutations VALUES ('mutation-1','user-1',3,10000,78.6,'birthDate,lifeExpectancyYears',1000)")
+            close()
+        }
+
+        helper.runMigrationsAndValidate(TEST_DB_V5, 5, true, T4LDatabase.MIGRATION_4_5).use { db ->
+            db.query("SELECT changedFields,baseSnapshotJson FROM profile_mutations WHERE clientMutationId='mutation-1'").use {
+                check(it.moveToFirst())
+                assertEquals("birthDate,lifeExpectancyYears", it.getString(0))
+                assertEquals(true, it.isNull(1))
+            }
+            db.execSQL("INSERT INTO personal_conflicts VALUES ('mutation-2','user-1','profile',3,4,'{}','{}',NULL,NULL,2000)")
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
+        const val TEST_DB_V4 = "migration-test-v4"
+        const val TEST_DB_V5 = "migration-test-v5"
     }
 }

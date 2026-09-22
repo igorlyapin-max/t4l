@@ -9,6 +9,7 @@ import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import app.t4l.data.DiagnosticEventDto
+import app.t4l.data.HttpStatusException
 
 class DiagnosticUploadWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
@@ -22,7 +23,12 @@ class DiagnosticUploadWorker(context: Context, params: WorkerParameters) : Corou
             })
             app.logger.acknowledge(events.size)
             Result.success()
-        }.getOrElse { Result.retry() }
+        }.getOrElse { error ->
+            if (error is HttpStatusException && error.statusCode == 400) {
+                app.logger.acknowledge(events.size)
+                Result.failure()
+            } else Result.retry()
+        }
     }
 }
 

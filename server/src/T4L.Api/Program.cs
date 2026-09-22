@@ -9,6 +9,7 @@ using OpenTelemetry.Trace;
 using T4L.Api.Diagnostics;
 using T4L.Api.Domain;
 using T4L.Api.Persistence;
+using T4L.Api.Profiles;
 using T4L.Api.Sync;
 using T4L.Api.Security;
 
@@ -56,6 +57,7 @@ builder.Services.AddDbContext<T4LDbContext>(options =>
 builder.Services.AddSignalR();
 builder.Services.AddScoped<SyncService>();
 builder.Services.AddScoped<WorkspaceTransferService>();
+builder.Services.AddScoped<UserProfileService>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentActor, CurrentActor>();
 builder.Services.AddScoped<WorkspaceAccess>();
@@ -91,10 +93,10 @@ var app = builder.Build();
 app.UseExceptionHandler(error => error.Run(async context =>
 {
     var exception = context.Features.Get<IExceptionHandlerFeature>()?.Error;
-    context.Response.StatusCode = exception switch { ArgumentException => 400, UnauthorizedAccessException => 403, _ => 500 };
+    context.Response.StatusCode = exception switch { RequestBodyTooLargeException => 413, ArgumentException => 400, UnauthorizedAccessException => 403, _ => 500 };
     await Results.Problem(
         statusCode: context.Response.StatusCode,
-        title: context.Response.StatusCode switch { 400 => "Invalid request", 403 => "Forbidden", _ => "Unexpected error" },
+        title: context.Response.StatusCode switch { 400 => "Invalid request", 403 => "Forbidden", 413 => "Payload too large", _ => "Unexpected error" },
         detail: builder.Environment.IsDevelopment() ? exception?.Message : null,
         extensions: new Dictionary<string, object?> { ["correlationId"] = context.TraceIdentifier })
         .ExecuteAsync(context);
@@ -118,6 +120,42 @@ api.MapGet("/bootstrap", async (ICurrentActor currentActor, T4LDbContext db, Can
     var workspaces = await db.Workspaces.AsNoTracking().Where(x => actor.Workspaces.Keys.Contains(x.Id))
         .OrderBy(x => x.Name).Select(x => new { workspaceId = x.Id, x.Name }).ToArrayAsync(ct);
     return Results.Ok(new { userId = actor.UserId, defaultWorkspaceId = workspaces.FirstOrDefault()?.workspaceId, workspaces = workspaces.Select(x => new { x.workspaceId, x.Name, role = actor.Workspaces[x.workspaceId].ToString().ToLowerInvariant() }) });
+});
+api.MapGet("/me/profile", (UserProfileService profiles, CancellationToken ct) => profiles.GetAsync(ct));
+api.MapPatch("/me/profile", async (UserProfilePatchRequest request, UserProfileService profiles, CancellationToken ct) =>
+{
+    var result = await profiles.PatchAsync(request, ct);
+    return result.Conflict ? Results.Conflict(result.Profile) : Results.Ok(result.Profile);
+});
+api.MapGet("/me/profile/avatar", async (HttpContext context, UserProfileService profiles, CancellationToken ct) =>
+{
+    var avatar = await profiles.GetAvatarAsync(ct);
+    if (!avatar.Found) return Results.NotFound();
+    context.Response.Headers.ETag = $"\"{avatar.Revision}\"";
+    context.Response.Headers.CacheControl = "private, max-age=0, must-revalidate";
+    context.Response.Headers.XContentTypeOptions = "nosniff";
+    return Results.File(avatar.Content!, avatar.ContentType!);
+});
+api.MapPut("/me/profile/avatar", async (
+    HttpRequest request,
+    Guid clientMutationId,
+    long baseRevision,
+    UserProfileService profiles,
+    CancellationToken ct) =>
+{
+    var contentType = request.ContentType?.Split(';', 2)[0].Trim().ToLowerInvariant() ?? "";
+    var content = await ReadLimitedBodyAsync(request.Body, 2 * 1024 * 1024, ct);
+    var result = await profiles.PutAvatarAsync(clientMutationId, baseRevision, contentType, content, ct);
+    return result.Conflict ? Results.Conflict(result.Result) : Results.Ok(result.Result);
+});
+api.MapDelete("/me/profile/avatar", async (
+    Guid clientMutationId,
+    long baseRevision,
+    UserProfileService profiles,
+    CancellationToken ct) =>
+{
+    var result = await profiles.DeleteAvatarAsync(clientMutationId, baseRevision, ct);
+    return result.Conflict ? Results.Conflict(result.Result) : Results.Ok(result.Result);
 });
 api.MapGet("/workspaces/{workspaceId:guid}/category-trees", async (
     Guid workspaceId,
@@ -236,5 +274,21 @@ await using (var scope = app.Services.CreateAsyncScope())
 }
 
 await app.RunAsync();
+
+static async Task<byte[]> ReadLimitedBodyAsync(Stream input, int maximumBytes, CancellationToken ct)
+{
+    await using var output = new MemoryStream();
+    var buffer = new byte[64 * 1024];
+    while (true)
+    {
+        var read = await input.ReadAsync(buffer, ct);
+        if (read == 0) break;
+        if (output.Length + read > maximumBytes) throw new RequestBodyTooLargeException("Avatar exceeds 2 MiB.");
+        await output.WriteAsync(buffer.AsMemory(0, read), ct);
+    }
+    return output.ToArray();
+}
+
+sealed class RequestBodyTooLargeException(string message) : Exception(message);
 
 public partial class Program;

@@ -6,6 +6,8 @@ namespace T4L.Api.Persistence;
 public sealed class T4LDbContext(DbContextOptions<T4LDbContext> options) : DbContext(options)
 {
     public DbSet<UserEntity> Users => Set<UserEntity>();
+    public DbSet<UserProfileEntity> UserProfiles => Set<UserProfileEntity>();
+    public DbSet<ProcessedProfileMutationEntity> ProcessedProfileMutations => Set<ProcessedProfileMutationEntity>();
     public DbSet<WorkspaceEntity> Workspaces => Set<WorkspaceEntity>();
     public DbSet<MembershipEntity> Memberships => Set<MembershipEntity>();
     public DbSet<CategoryTreeEntity> CategoryTrees => Set<CategoryTreeEntity>();
@@ -23,6 +25,11 @@ public sealed class T4LDbContext(DbContextOptions<T4LDbContext> options) : DbCon
     {
         modelBuilder.Entity<UserEntity>().HasKey(x => x.Id);
         modelBuilder.Entity<UserEntity>().HasIndex(x => x.ExternalSubject).IsUnique();
+        modelBuilder.Entity<UserProfileEntity>().HasKey(x => x.UserId);
+        modelBuilder.Entity<UserProfileEntity>().HasOne<UserEntity>().WithOne().HasForeignKey<UserProfileEntity>(x => x.UserId);
+        modelBuilder.Entity<UserProfileEntity>().Property(x => x.LifeExpectancyYears).HasPrecision(5, 2);
+        modelBuilder.Entity<ProcessedProfileMutationEntity>().HasKey(x => new { x.UserId, x.ClientMutationId, x.Kind });
+        modelBuilder.Entity<ProcessedProfileMutationEntity>().HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId);
         modelBuilder.Entity<WorkspaceEntity>().HasKey(x => x.Id);
         modelBuilder.Entity<MembershipEntity>().HasKey(x => new { x.WorkspaceId, x.UserId });
         modelBuilder.Entity<MembershipEntity>().HasOne<WorkspaceEntity>().WithMany().HasForeignKey(x => x.WorkspaceId);

@@ -10,6 +10,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.MediaType
 import java.io.IOException
 import java.time.Instant
 
@@ -57,6 +58,25 @@ data class ApiMutation(
     val appVersion: String,
 )
 @Serializable data class DiagnosticBatch(val events: List<DiagnosticEventDto>)
+@Serializable data class ApiUserProfile(
+    val birthDate: String? = null,
+    val lifeExpectancyYears: Double? = null,
+    val revision: Long,
+    val avatarRevision: Long,
+    val hasAvatar: Boolean,
+)
+@Serializable data class ProfilePatchBody(
+    val clientMutationId: String,
+    val baseRevision: Long,
+    val changedFields: List<String>,
+    val birthDate: String? = null,
+    val lifeExpectancyYears: Double? = null,
+)
+data class ProfilePatchResult(val conflict: Boolean, val profile: ApiUserProfile)
+@Serializable data class AvatarMutationResponse(val avatarRevision: Long, val hasAvatar: Boolean)
+data class AvatarMutationResult(val conflict: Boolean, val response: AvatarMutationResponse)
+data class AvatarDownload(val bytes: ByteArray, val contentType: String?, val revision: Long)
+class HttpStatusException(val statusCode: Int) : IOException("HTTP $statusCode")
 
 class ApiClient(
     private val http: OkHttpClient = OkHttpClient(),
@@ -107,13 +127,53 @@ class ApiClient(
             .build())
     }
 
+    suspend fun profile(): ApiUserProfile = request(
+        Request.Builder().url("${baseUrlProvider()}api/v1/me/profile").get().build(),
+        ApiUserProfile.serializer(),
+    )
+
+    suspend fun patchProfile(body: ProfilePatchBody): ProfilePatchResult = withContext(Dispatchers.IO) {
+        val request = Request.Builder().url("${baseUrlProvider()}api/v1/me/profile")
+            .patch(json.encodeToString(ProfilePatchBody.serializer(), body).toRequestBody(JSON_MEDIA_TYPE)).build()
+        http.newCall(request).execute().use { response ->
+            val payload = response.body?.string().orEmpty()
+            if (response.code !in listOf(200, 409)) throw HttpStatusException(response.code)
+            ProfilePatchResult(response.code == 409, json.decodeFromString(ApiUserProfile.serializer(), payload))
+        }
+    }
+
+    suspend fun avatar(): AvatarDownload? = withContext(Dispatchers.IO) {
+        http.newCall(Request.Builder().url("${baseUrlProvider()}api/v1/me/profile/avatar").get().build()).execute().use { response ->
+            if (response.code == 404) return@withContext null
+            if (!response.isSuccessful) throw HttpStatusException(response.code)
+            AvatarDownload(response.body?.bytes() ?: byteArrayOf(), response.header("Content-Type"), response.header("ETag")?.trim('"')?.toLongOrNull() ?: 0)
+        }
+    }
+
+    suspend fun putAvatar(mutationId: String, baseRevision: Long, contentType: String, bytes: ByteArray): AvatarMutationResult =
+        avatarMutation(Request.Builder()
+            .url("${baseUrlProvider()}api/v1/me/profile/avatar?clientMutationId=$mutationId&baseRevision=$baseRevision")
+            .put(bytes.toRequestBody(contentType.toMediaType())).build())
+
+    suspend fun deleteAvatar(mutationId: String, baseRevision: Long): AvatarMutationResult = avatarMutation(
+        Request.Builder().url("${baseUrlProvider()}api/v1/me/profile/avatar?clientMutationId=$mutationId&baseRevision=$baseRevision").delete().build(),
+    )
+
+    private suspend fun avatarMutation(request: Request): AvatarMutationResult = withContext(Dispatchers.IO) {
+        http.newCall(request).execute().use { response ->
+            val payload = response.body?.string().orEmpty()
+            if (response.code !in listOf(200, 409)) throw HttpStatusException(response.code)
+            AvatarMutationResult(response.code == 409, json.decodeFromString(AvatarMutationResponse.serializer(), payload))
+        }
+    }
+
     private suspend fun <T> request(
         request: Request,
         serializer: kotlinx.serialization.KSerializer<T>,
     ): T = withContext(Dispatchers.IO) {
         http.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code}: ${body.take(300)}")
+            if (!response.isSuccessful) throw HttpStatusException(response.code)
             json.decodeFromString(serializer, body)
         }
     }
@@ -121,7 +181,7 @@ class ApiClient(
     private suspend fun rawRequest(request: Request): String = withContext(Dispatchers.IO) {
         http.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (!response.isSuccessful) throw IOException("HTTP ${response.code}: ${body.take(300)}")
+            if (!response.isSuccessful) throw HttpStatusException(response.code)
             body
         }
     }

@@ -27,17 +27,32 @@ class StructuredLogger(private val context: Context) {
         event("diagnostic_level_changed", mapOf("level" to value.name))
     }
 
-    fun event(name: String, fields: Map<String, String> = emptyMap()) {
-        if (level == DiagnosticLevel.OFF) return
-        val safeFields = fields.mapValues { (key, value) -> redact(key, value) }
-        val line = Json.encodeToString(PendingDiagnosticEvent(Instant.now().toString(), "information", name.take(80), safeFields))
+    fun event(name: String, fields: Map<String, String> = emptyMap(), minimumLevel: DiagnosticLevel = DiagnosticLevel.BASIC) {
+        val activeLevel = level
+        if (activeLevel == DiagnosticLevel.OFF || minimumLevel == DiagnosticLevel.VERBOSE && activeLevel != DiagnosticLevel.VERBOSE) return
+        if (name !in EVENT_NAMES || fields.keys.any { it !in VERBOSE_FIELDS }) {
+            Log.w("T4L", "diagnostic_event_rejected")
+            return
+        }
+        val allowed = if (minimumLevel == DiagnosticLevel.VERBOSE) VERBOSE_FIELDS else BASIC_FIELDS
+        val safeFields = fields.filterKeys(allowed::contains).mapValues { (key, value) -> redact(key, value) }
+        val line = Json.encodeToString(PendingDiagnosticEvent(Instant.now().toString(), minimumLevel.name.lowercase(), name.take(80), safeFields))
         Log.i("T4L", line)
         writeRotatingFile(line)
         DiagnosticUploadScheduler.schedule(context)
     }
 
-    private fun redact(key: String, value: String): String =
-        if (key in SAFE_FIELDS) value.take(120) else "[redacted]"
+    fun verboseEvent(name: String, fields: Map<String, String> = emptyMap()) = event(name, fields, DiagnosticLevel.VERBOSE)
+
+    private fun redact(key: String, value: String): String = when (key) {
+        "errorType" -> value.takeIf(ERROR_TYPES::contains) ?: "Other"
+        "durationMs", "pendingCount", "conflictCount" -> value.toLongOrNull()?.coerceAtLeast(0)?.toString() ?: "0"
+        "level" -> value.takeIf { it in setOf("OFF", "BASIC", "VERBOSE") } ?: "OFF"
+        "outcome" -> value.takeIf { it in setOf("success", "failure", "denied", "queued") } ?: "failure"
+        "phase" -> value.takeIf { it == "sync" } ?: "sync"
+        "operation", "status" -> value.take(40).filter { it.isLetterOrDigit() || it in "_-." }
+        else -> "[redacted]"
+    }
 
     private fun writeRotatingFile(line: String) {
         val directory = File(context.filesDir, "diagnostics").apply { mkdirs() }
@@ -66,6 +81,13 @@ class StructuredLogger(private val context: Context) {
 
     private companion object {
         const val MAX_BYTES = 512 * 1024L
-        val SAFE_FIELDS = setOf("durationMs", "outcome", "errorType", "pendingCount", "conflictCount", "level")
+        val BASIC_FIELDS = setOf("durationMs", "outcome", "errorType", "pendingCount", "conflictCount", "level")
+        val VERBOSE_FIELDS = BASIC_FIELDS + setOf("phase", "operation", "status")
+        val EVENT_NAMES = setOf(
+            "application_started", "diagnostic_level_changed", "sync_started", "sync_succeeded", "sync_retry",
+            "ui_action_failed", "backup_export_succeeded", "backup_export_failed", "backup_import_succeeded",
+            "backup_import_failed", "sync_conflict_resolution_queued", "pomodoro_notification_denied", "profile_actor_rebound",
+        )
+        val ERROR_TYPES = setOf("IOException", "ConnectException", "UnknownHostException", "SocketTimeoutException", "IllegalArgumentException", "IllegalStateException", "SerializationException", "AEADBadTagException", "SecurityException", "Other")
     }
 }

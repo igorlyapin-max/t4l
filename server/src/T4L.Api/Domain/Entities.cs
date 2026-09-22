@@ -31,6 +31,27 @@ public sealed class UserEntity
     public string? ExternalSubject { get; set; }
 }
 
+public sealed class UserProfileEntity
+{
+    public Guid UserId { get; set; }
+    public DateOnly? BirthDate { get; set; }
+    public decimal? LifeExpectancyYears { get; set; }
+    public long Revision { get; set; }
+    public long AvatarRevision { get; set; }
+    public byte[]? AvatarContent { get; set; }
+    public string? AvatarContentType { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
+public sealed class ProcessedProfileMutationEntity
+{
+    public Guid UserId { get; set; }
+    public Guid ClientMutationId { get; set; }
+    public string Kind { get; set; } = "profile";
+    public long ResultRevision { get; set; }
+    public DateTimeOffset ProcessedAt { get; set; }
+}
+
 public sealed class WorkspaceEntity
 {
     public Guid Id { get; set; }

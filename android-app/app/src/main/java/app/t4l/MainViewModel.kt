@@ -1,6 +1,7 @@
 package app.t4l
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.t4l.data.DashboardState
@@ -10,6 +11,8 @@ import app.t4l.data.T4LRepository
 import app.t4l.data.TaskState
 import app.t4l.data.SyncUiState
 import app.t4l.data.WorkspaceOption
+import app.t4l.data.UserProfileRow
+import app.t4l.data.PersonalConflictRow
 import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.Dispatchers
@@ -28,7 +31,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val plannerState: StateFlow<PlannerState> = repository.plannerState.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlannerState())
     val syncState: StateFlow<SyncUiState> = repository.syncState.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), SyncUiState())
     val workspaces: StateFlow<List<WorkspaceOption>> = repository.availableWorkspaces.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-    val uiError = MutableStateFlow<String?>(null)
+    val profile: StateFlow<UserProfileRow?> = app.profileRepository.profile.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+    val personalConflicts: StateFlow<List<PersonalConflictRow>> = app.profileRepository.personalConflicts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+    val profileActorResolved: StateFlow<Boolean> = app.profileRepository.actorResolved
+    val pomodoro: StateFlow<PomodoroState> = app.pomodoroStore.state
+    val uiFeedback = MutableStateFlow<UiFeedback?>(null)
+    val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
+    private var pendingEncryptedBackup: String? = null
 
     fun createStarterData() = mutate { repository.createStarterData() }
     fun createCategoryTree(name: String) = mutate { repository.createCategoryTree(name) }
@@ -38,13 +47,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun archiveCategory(id: String) = mutate { repository.archiveCategory(id) }
     fun archiveCategoryTree(id: String) = mutate { repository.archiveCategoryTree(id) }
     fun switch(treeId: String, categoryId: String?) = mutate { repository.switchCategory(treeId, categoryId) }
-    fun addEvent(treeId: String, categoryId: String?, at: Long, taskId: String? = null) = mutate { repository.addEvent(treeId, categoryId, at, taskId) }
+    fun addEvent(treeId: String, categoryId: String?, at: Long, taskId: String? = null, onComplete: ((Boolean) -> Unit)? = null) = mutate(onComplete) { repository.addEvent(treeId, categoryId, at, taskId) }
     fun updateEvent(id: String, at: Long) = mutate { repository.updateEvent(id, at) }
     fun deleteEvent(id: String) = mutate { repository.deleteEvent(id) }
-    fun createTask(title: String, categoryId: String?, parentTaskId: String?, estimate: Int, nextAction: LocalDate, nextMinute: Int?, deadline: Long?) =
-        mutate { repository.createTask(title, categoryId, parentTaskId, estimate, nextAction, nextMinute, deadline) }
-    fun updateTask(id: String, title: String, categoryId: String?, estimate: Int, nextAction: LocalDate, nextMinute: Int?, deadline: Long?) =
-        mutate { repository.updateTask(id, title, categoryId, estimate, nextAction, nextMinute, deadline) }
+    fun createTask(title: String, categoryId: String?, parentTaskId: String?, estimate: Int, nextAction: LocalDate, nextMinute: Int?, deadline: Long?, onComplete: ((Boolean) -> Unit)? = null) =
+        mutate(onComplete) { repository.createTask(title, categoryId, parentTaskId, estimate, nextAction, nextMinute, deadline) }
+    fun updateTask(id: String, title: String, categoryId: String?, estimate: Int, nextAction: LocalDate, nextMinute: Int?, deadline: Long?, onComplete: ((Boolean) -> Unit)? = null) =
+        mutate(onComplete) { repository.updateTask(id, title, categoryId, estimate, nextAction, nextMinute, deadline) }
     fun setTaskStatus(id: String, status: String) = mutate { repository.setTaskStatus(id, status) }
     fun deleteTask(id: String) = mutate { repository.deleteTask(id) }
     fun addTaskComment(id: String, text: String) = mutate { repository.addTaskComment(id, text) }
@@ -52,7 +61,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun createPlan(name: String, kind: String, startsAt: Long, endsAt: Long) = mutate { repository.createPlan(name, kind, startsAt, endsAt) }
     fun archivePlan(id: String) = mutate { repository.archivePlan(id) }
     fun setBudget(planId: String, categoryId: String, minutes: Int) = mutate { repository.setBudget(planId, categoryId, minutes) }
-    fun addPlannedEvent(planId: String, treeId: String, categoryId: String?, at: Long, taskId: String? = null) = mutate { repository.addPlannedEvent(planId, treeId, categoryId, at, taskId) }
+    fun addPlannedEvent(planId: String, treeId: String, categoryId: String?, at: Long, taskId: String? = null, onComplete: ((Boolean) -> Unit)? = null) = mutate(onComplete) { repository.addPlannedEvent(planId, treeId, categoryId, at, taskId) }
     fun updatePlannedEvent(id: String, at: Long) = mutate { repository.updatePlannedEvent(id, at) }
     fun deletePlannedEvent(id: String) = mutate { repository.deletePlannedEvent(id) }
 
@@ -60,14 +69,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val zone = ZoneId.systemDefault(); val from = LocalDate.now(zone).atStartOfDay(zone).toInstant().toEpochMilli()
         return repository.report(dashboard.value, from, LocalDate.now(zone).plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli(), now)
     }
-    private fun mutate(block: suspend () -> Unit) = viewModelScope.launch {
+    private fun mutate(onComplete: ((Boolean) -> Unit)? = null, block: suspend () -> Unit) = viewModelScope.launch {
         runCatching { block() }
-            .onSuccess { uiError.value = null; app.syncScheduler.scheduleAfterChange() }
-            .onFailure { error -> uiError.value = error.message ?: error.javaClass.simpleName; app.logger.event("ui_action_failed", mapOf("errorType" to error.javaClass.simpleName)) }
+            .onSuccess { app.syncScheduler.scheduleAfterChange(); onComplete?.invoke(true) }
+            .onFailure { error -> showFailure(error); app.logger.event("ui_action_failed", mapOf("errorType" to error.javaClass.simpleName)); onComplete?.invoke(false) }
     }
-    fun clearError() { uiError.value = null }
-    fun resolveConflictUseServer(id: String) = mutate { repository.resolveConflictUseServer(id) }
-    fun resolveConflictUseLocal(id: String, payload: String? = null) = mutate { repository.resolveConflictUseLocal(id, payload) }
+    fun consumeFeedback(id: Long) { if (uiFeedback.value?.id == id) uiFeedback.value = null }
+    fun resolveConflictUseServer(id: String) = resolveConflict(id) { repository.resolveConflictUseServer(id) }
+    fun resolveConflictUseLocal(id: String, payload: String? = null) = resolveConflict(id) { repository.resolveConflictUseLocal(id, payload) }
     fun retryRejected(id: String, payload: String? = null) = mutate { repository.retryRejected(id, payload) }
     fun syncNow() = app.syncScheduler.syncNow()
     fun diagnosticLevel(): DiagnosticLevel = app.logger.level
@@ -81,14 +90,109 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setAppLockEnabled(enabled: Boolean): Boolean = app.appLock.setEnabled(enabled)
     fun oidcEnabled(): Boolean = app.authManager.enabled
     fun signOut(onComplete: () -> Unit) = viewModelScope.launch {
-        withContext(Dispatchers.IO) { app.database.clearAllTables(); app.authManager.signOut() }
+        withContext(Dispatchers.IO) { app.profileRepository.clearLocalFiles(); app.database.clearAllTables(); app.authManager.signOut() }
         onComplete()
     }
-    suspend fun exportBackup(password: CharArray? = null): String = withContext(Dispatchers.IO) {
-        val snapshot = app.apiClient.snapshot(repository.workspaceId); if (password == null) snapshot else BackupCrypto.encrypt(snapshot, password)
+    fun saveProfile(birthDate: LocalDate?, lifeExpectancyYears: Double?) = mutate { app.profileRepository.saveProfile(birthDate, lifeExpectancyYears) }
+    fun saveAvatar(bytes: ByteArray) = mutate { app.profileRepository.saveAvatar(bytes) }
+    fun removeAvatar() = mutate { app.profileRepository.removeAvatar() }
+    fun resolvePersonalConflictUseServer(id: String) = resolveConflict(id) { app.profileRepository.resolveConflictUseServer(id) }
+    fun resolvePersonalConflictUseLocal(id: String) = resolveConflict(id) { app.profileRepository.resolveConflictUseLocal(id) }
+    fun configurePomodoro(mode: PomodoroMode, work: Int, shortBreak: Int, longBreak: Int) =
+        runCatching { app.pomodoroStore.configure(mode, work, shortBreak, longBreak) }
+            .onFailure(::showFailure)
+
+    fun exportBackup(destination: Uri, password: CharArray? = null) = viewModelScope.launch {
+        backupState.value = BackupUiState.Exporting
+        try {
+            val content = withContext(Dispatchers.IO) {
+                val snapshot = app.apiClient.snapshot(repository.workspaceId)
+                if (password == null) snapshot else BackupCrypto.encrypt(snapshot, password)
+            }
+            withContext(Dispatchers.IO) {
+                val stream = requireNotNull(app.contentResolver.openOutputStream(destination))
+                stream.bufferedWriter().use { it.write(content) }
+            }
+            uiFeedback.value = UiFeedback(kind = UiMessageKind.BACKUP_EXPORT_SUCCEEDED)
+            app.logger.event("backup_export_succeeded")
+        } catch (error: Throwable) {
+            password?.fill('\u0000')
+            showFailure(error, backup = true)
+            app.logger.event("backup_export_failed", mapOf("errorType" to error.javaClass.simpleName))
+        } finally {
+            backupState.value = BackupUiState.Idle
+        }
     }
-    suspend fun importBackup(container: String, password: CharArray? = null): Int = withContext(Dispatchers.IO) {
-        val snapshot = if (BackupCrypto.isEncrypted(container)) BackupCrypto.decrypt(container, requireNotNull(password)) else container
-        val result = app.apiClient.importWorkspace("Imported workspace", snapshot); repository.selectWorkspace(result.workspaceId); syncNow(); result.importedEntities
+
+    fun inspectBackup(source: Uri) = viewModelScope.launch {
+        backupState.value = BackupUiState.Importing
+        try {
+            val content = withContext(Dispatchers.IO) {
+                val stream = requireNotNull(app.contentResolver.openInputStream(source))
+                stream.bufferedReader().use { it.readText() }
+            }
+            if (BackupCrypto.isEncrypted(content)) {
+                pendingEncryptedBackup = content
+                backupState.value = BackupUiState.PasswordRequired
+            } else {
+                importBackupContent(content, null)
+            }
+        } catch (error: Throwable) {
+            showFailure(error, backup = true)
+            app.logger.event("backup_import_failed", mapOf("errorType" to error.javaClass.simpleName))
+            backupState.value = BackupUiState.Idle
+        }
+    }
+
+    fun importPendingBackup(password: CharArray) {
+        val content = pendingEncryptedBackup
+        if (content == null) {
+            password.fill('\u0000')
+            showFailure(IllegalStateException("No pending encrypted backup."), backup = true)
+            backupState.value = BackupUiState.Idle
+            return
+        }
+        pendingEncryptedBackup = null
+        viewModelScope.launch { importBackupContent(content, password) }
+    }
+
+    fun cancelBackupPassword() {
+        pendingEncryptedBackup = null
+        backupState.value = BackupUiState.Idle
+    }
+
+    private suspend fun importBackupContent(container: String, password: CharArray?) {
+        backupState.value = BackupUiState.Importing
+        try {
+            val count = withContext(Dispatchers.IO) {
+                val snapshot = if (BackupCrypto.isEncrypted(container)) BackupCrypto.decrypt(container, requireNotNull(password)) else container
+                val result = app.apiClient.importWorkspace("Imported workspace", snapshot)
+                repository.selectWorkspace(result.workspaceId)
+                result.importedEntities
+            }
+            syncNow()
+            uiFeedback.value = UiFeedback(kind = UiMessageKind.BACKUP_IMPORT_SUCCEEDED, count = count)
+            app.logger.event("backup_import_succeeded")
+        } catch (error: Throwable) {
+            password?.fill('\u0000')
+            showFailure(error, backup = true)
+            app.logger.event("backup_import_failed", mapOf("errorType" to error.javaClass.simpleName))
+        } finally {
+            backupState.value = BackupUiState.Idle
+        }
+    }
+
+    private fun resolveConflict(id: String, block: suspend () -> Unit) = viewModelScope.launch {
+        runCatching { block() }
+            .onSuccess {
+                app.syncScheduler.scheduleAfterChange()
+                uiFeedback.value = UiFeedback(kind = UiMessageKind.CONFLICT_RESOLUTION_QUEUED)
+                app.logger.event("sync_conflict_resolution_queued")
+            }
+            .onFailure(::showFailure)
+    }
+
+    private fun showFailure(error: Throwable, backup: Boolean = false) {
+        uiFeedback.value = UiFeedback(kind = UiErrorMapper.map(error, backup))
     }
 }
