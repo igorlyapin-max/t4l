@@ -67,6 +67,46 @@ public sealed class TimelineEngineTests
         Assert.Equal(7_200, total);
     }
 
+    [Fact]
+    public void DistributionKeepsTreesIndependentAndCountsOwnAndDescendants()
+    {
+        var start = DateTimeOffset.Parse("2026-09-20T10:00:00Z", CultureInfo.InvariantCulture);
+        var a = Guid.NewGuid(); var b = Guid.NewGuid(); var c = Guid.NewGuid();
+        var otherTree = Guid.NewGuid(); var x = Guid.NewGuid(); var y = Guid.NewGuid(); var z = Guid.NewGuid();
+        var task = Guid.NewGuid();
+        var categories = new[] { Category(a, null), Category(b, a), Category(c, b),
+            new CategoryEntity { Id = x, CategoryTreeId = otherTree },
+            new CategoryEntity { Id = y, CategoryTreeId = otherTree, ParentId = x },
+            new CategoryEntity { Id = z, CategoryTreeId = otherTree, ParentId = x } };
+        var points = new[] {
+            new TimelinePoint(Guid.NewGuid(), TimelineId, a, null, start),
+            new TimelinePoint(Guid.NewGuid(), otherTree, x, null, start),
+            new TimelinePoint(Guid.NewGuid(), TimelineId, c, task, start.AddMinutes(20)),
+            new TimelinePoint(Guid.NewGuid(), otherTree, z, null, start.AddMinutes(30)) };
+        var intervals = TimelineEngine.BuildPointIntervals(points, start, start.AddHours(1));
+        var rows = TimelineEngine.Distribution(intervals, categories).ToDictionary(row => row.CategoryId);
+        Assert.Equal((20 * 60_000L, 60 * 60_000L), (rows[a].OwnMillis, rows[a].TotalMillis));
+        Assert.Equal((0L, 40 * 60_000L), (rows[b].OwnMillis, rows[b].TotalMillis));
+        Assert.Equal((40 * 60_000L, 40 * 60_000L), (rows[c].OwnMillis, rows[c].TotalMillis));
+        Assert.Equal((30 * 60_000L, 60 * 60_000L), (rows[x].OwnMillis, rows[x].TotalMillis));
+        Assert.False(rows.ContainsKey(y));
+        Assert.Equal((30 * 60_000L, 30 * 60_000L), (rows[z].OwnMillis, rows[z].TotalMillis));
+        Assert.Equal(40 * 60_000L, TimelineEngine.TaskSpentMillis(intervals, task));
+    }
+
+    [Fact]
+    public void TaskSpentExcludesOtherTasksEvenWhenTheyShareCategory()
+    {
+        var start = DateTimeOffset.Parse("2026-09-20T10:00:00Z", CultureInfo.InvariantCulture);
+        var parent = Guid.NewGuid(); var child = Guid.NewGuid();
+        var points = new[] {
+            new TimelinePoint(Guid.NewGuid(), TimelineId, WorkId, parent, start),
+            new TimelinePoint(Guid.NewGuid(), TimelineId, WorkId, child, start.AddMinutes(20)) };
+        var intervals = TimelineEngine.BuildPointIntervals(points, start, start.AddHours(1));
+        Assert.Equal(20 * 60_000L, TimelineEngine.TaskSpentMillis(intervals, parent));
+        Assert.Equal(40 * 60_000L, TimelineEngine.TaskSpentMillis(intervals, child));
+    }
+
     private static TimeEventEntity Event(DateTimeOffset timestamp, Guid? categoryId) => new()
     {
         Id = Guid.NewGuid(), WorkspaceId = WorkspaceId, CategoryTreeId = TimelineId,

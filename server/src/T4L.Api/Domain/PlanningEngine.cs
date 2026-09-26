@@ -49,7 +49,7 @@ public static class PlanningEngine
             .Where(x => x.DeletedAt is null && x.Status == TaskState.Active)
             .Select(task =>
             {
-                var adjusted = Math.Max(1, (int)Math.Ceiling(task.RemainingEstimateMinutes * planningFactor));
+                var adjusted = Math.Max(1, (int)Math.Ceiling(task.EstimateMinutes * planningFactor));
                 var fits = adjusted <= windowMinutes;
                 if (!fits && !task.Splittable) return null;
                 var suggested = Math.Min(adjusted, windowMinutes);

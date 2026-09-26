@@ -34,8 +34,8 @@ public sealed class OverlappingPlanSyncTests
             await using var provider = services.BuildServiceProvider();
             var actor = new TestActor();
             var sync = new SyncService(db, provider.GetRequiredService<IHubContext<ChangeHub>>(), new WorkspaceAccess(actor), TimeProvider.System, NullLogger<SyncService>.Instance);
-            var first = Mutation(Guid.NewGuid(), "Day timeline", "timeline");
-            var second = Mutation(Guid.NewGuid(), "Week budget", "budget");
+            var first = Mutation(Guid.NewGuid(), "Day plan");
+            var second = Mutation(Guid.NewGuid(), "Week plan");
             var clientId = Guid.NewGuid();
 
             var firstResult = await sync.PushAsync(new PushRequest(clientId, [first]), cancellationToken);
@@ -54,9 +54,9 @@ public sealed class OverlappingPlanSyncTests
             await new NpgsqlCommand($"DROP DATABASE IF EXISTS \"{databaseName}\" WITH (FORCE)", admin).ExecuteNonQueryAsync(cancellationToken);
         }
 
-        static MutationDto Mutation(Guid id, string name, string kind) => new(
+        static MutationDto Mutation(Guid id, string name) => new(
             Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "plan", id, "upsert", 0,
-            JsonSerializer.SerializeToElement(new { name, kind, startsAt = "2199-09-21T05:00:00Z", endsAt = "2199-09-21T17:00:00Z", zoneId = "Europe/Moscow", archived = false }));
+            JsonSerializer.SerializeToElement(new { name, startsAt = "2199-09-21T05:00:00Z", endsAt = "2199-09-21T17:00:00Z", zoneId = "Europe/Moscow", archived = false }));
     }
 
     private sealed class TestActor : ICurrentActor

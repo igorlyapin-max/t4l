@@ -48,9 +48,7 @@ class PomodoroStore(context: Context) {
     val state: StateFlow<PomodoroState> = mutableState
 
     @Synchronized fun configure(mode: PomodoroMode, work: Int, shortBreak: Int, longBreak: Int) {
-        require(work in 1..180 && shortBreak in 1..60 && longBreak in 1..120)
-        check(mutableState.value.status == PomodoroStatus.IDLE)
-        save(PomodoroState(mode, work, shortBreak, longBreak, pausedRemainingMs = work * 60_000L))
+        save(PomodoroEngine.configure(mutableState.value, mode, work, shortBreak, longBreak))
     }
 
     @Synchronized fun start(now: Long = System.currentTimeMillis()): PomodoroState {
@@ -103,6 +101,24 @@ class PomodoroStore(context: Context) {
 }
 
 internal object PomodoroEngine {
+    fun configure(current: PomodoroState, mode: PomodoroMode, work: Int, shortBreak: Int, longBreak: Int): PomodoroState {
+        require(work in 1..180 && shortBreak in 1..60 && longBreak in 1..120)
+        val configured = current.copy(
+            mode = mode,
+            workMinutes = work,
+            shortBreakMinutes = shortBreak,
+            longBreakMinutes = longBreak,
+        )
+        return if (current.status == PomodoroStatus.IDLE) {
+            configured.copy(
+                phase = PomodoroPhase.WORK,
+                workRound = 1,
+                endsAtEpochMs = 0,
+                pausedRemainingMs = work * 60_000L,
+            )
+        } else configured
+    }
+
     fun next(current: PomodoroState): PomodoroState {
         val nextPhase: PomodoroPhase
         val nextRound: Int

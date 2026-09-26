@@ -32,6 +32,8 @@ class T4LApplication : Application() {
         private set
     lateinit var pomodoroStore: PomodoroStore
         private set
+    lateinit var taskListSettings: TaskListSettingsStore
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -46,6 +48,7 @@ class T4LApplication : Application() {
         apiClient = ApiClient(http = http, baseUrlProvider = { serverSettings.baseUrl })
         syncStateStore = SyncStateStore()
         pomodoroStore = PomodoroStore(this)
+        taskListSettings = TaskListSettingsStore(this)
         val identity = DeviceIdentity(this)
         repository = T4LRepository(database, identity, syncStateStore)
         profileRepository = ProfileRepository(this, database, apiClient, identity, actorInitiallyResolved = !authManager.enabled)

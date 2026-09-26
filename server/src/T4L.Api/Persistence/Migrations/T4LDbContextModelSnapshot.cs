@@ -132,6 +132,9 @@ namespace T4L.Api.Persistence.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateTimeOffset?>("PurgedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<long>("Revision")
                         .IsConcurrencyToken()
                         .HasColumnType("bigint");
@@ -141,6 +144,9 @@ namespace T4L.Api.Persistence.Migrations
 
                     b.Property<int>("SortOrder")
                         .HasColumnType("integer");
+
+                    b.Property<DateTimeOffset?>("TrashedAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -228,9 +234,6 @@ namespace T4L.Api.Persistence.Migrations
 
                     b.Property<DateTimeOffset>("EndsAt")
                         .HasColumnType("timestamp with time zone");
-
-                    b.Property<int>("Kind")
-                        .HasColumnType("integer");
 
                     b.Property<string>("Name")
                         .IsRequired()
@@ -433,15 +436,15 @@ namespace T4L.Api.Persistence.Migrations
                     b.Property<int>("Progress")
                         .HasColumnType("integer");
 
-                    b.Property<int>("RemainingEstimateMinutes")
-                        .HasColumnType("integer");
-
                     b.Property<long>("Revision")
                         .IsConcurrencyToken()
                         .HasColumnType("bigint");
 
                     b.Property<bool>("Splittable")
                         .HasColumnType("boolean");
+
+                    b.Property<int>("SortOrder")
+                        .HasColumnType("integer");
 
                     b.Property<int>("Status")
                         .HasColumnType("integer");
@@ -468,6 +471,8 @@ namespace T4L.Api.Persistence.Migrations
                     b.HasIndex("ParentTaskId");
 
                     b.HasIndex("WorkspaceId", "CategoryId");
+
+                    b.HasIndex("WorkspaceId", "SortOrder");
 
                     b.HasIndex("WorkspaceId", "UpdatedAt");
 
@@ -522,7 +527,10 @@ namespace T4L.Api.Persistence.Migrations
 
                     b.HasIndex("WorkspaceId", "UpdatedAt");
 
-                    b.HasIndex("WorkspaceId", "CategoryTreeId", "OccurredAt");
+                    b.HasIndex("WorkspaceId", "CategoryTreeId", "OccurredAt", "Id");
+
+                    b.HasIndex("WorkspaceId", "TaskId", "OccurredAt", "Id")
+                        .HasFilter("\"DeletedAt\" IS NULL AND \"TaskId\" IS NOT NULL");
 
                     b.ToTable("Events");
                 });

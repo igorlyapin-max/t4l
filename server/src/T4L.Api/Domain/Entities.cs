@@ -11,7 +11,6 @@ public enum LoadType { Focus, Light, Background, Compatible }
 public enum EventSource { Manual, Import, Integration }
 public enum EnergyLevel { Low, Medium, High }
 public enum TaskState { Active, Paused, Completed, Cancelled }
-public enum PlanKind { Budget, Timeline }
 public enum MembershipRole { Owner, Admin, Editor, Viewer }
 
 public abstract class SyncEntity
@@ -72,6 +71,8 @@ public sealed class CategoryTreeEntity : SyncEntity
     public CategoryTreeRole Role { get; set; }
     public int SortOrder { get; set; }
     public bool Archived { get; set; }
+    public DateTimeOffset? TrashedAt { get; set; }
+    public DateTimeOffset? PurgedAt { get; set; }
 }
 
 public sealed class CategoryEntity : SyncEntity
@@ -101,7 +102,6 @@ public sealed class TaskEntity : SyncEntity
     public Guid? CategoryId { get; set; }
     public Guid? ParentTaskId { get; set; }
     public int EstimateMinutes { get; set; }
-    public int RemainingEstimateMinutes { get; set; }
     public DateTimeOffset? Deadline { get; set; }
     public DateOnly? NextActionDate { get; set; }
     public TimeOnly? NextActionTime { get; set; }
@@ -111,6 +111,7 @@ public sealed class TaskEntity : SyncEntity
     public int Progress { get; set; }
     public TaskState Status { get; set; }
     public bool Splittable { get; set; }
+    public int SortOrder { get; set; }
 }
 
 public sealed class TaskCommentEntity : SyncEntity
@@ -123,7 +124,6 @@ public sealed class TaskCommentEntity : SyncEntity
 public sealed class PlanEntity : SyncEntity
 {
     public string Name { get; set; } = "";
-    public PlanKind Kind { get; set; }
     public DateTimeOffset StartsAt { get; set; }
     public DateTimeOffset EndsAt { get; set; }
     public string ZoneId { get; set; } = "UTC";

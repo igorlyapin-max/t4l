@@ -21,7 +21,7 @@ class DatabaseConverters {
         OutboxRow::class, SyncCursorRow::class, ConflictRow::class,
         UserProfileRow::class, ProfileMutationRow::class, AvatarMutationRow::class, PersonalConflictRow::class,
     ],
-    version = 5,
+    version = 9,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -33,7 +33,62 @@ abstract class T4LDatabase : RoomDatabase() {
             context.applicationContext,
             T4LDatabase::class.java,
             "t4l.db",
-        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5).fallbackToDestructiveMigrationFrom(true, 1).build()
+        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).fallbackToDestructiveMigrationFrom(true, 1).build()
+
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE outbox ADD COLUMN atomicGroupId TEXT")
+                db.execSQL("ALTER TABLE conflicts ADD COLUMN linkedEventId TEXT")
+            }
+        }
+
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE category_trees ADD COLUMN trashedAtEpochMs INTEGER")
+                db.execSQL("ALTER TABLE category_trees ADD COLUMN purgedAtEpochMs INTEGER")
+                db.execSQL("UPDATE category_trees SET trashedAtEpochMs=? WHERE archived=1 AND deletedAtEpochMs IS NULL", arrayOf(System.currentTimeMillis()))
+            }
+        }
+
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE tasks_new (id TEXT NOT NULL PRIMARY KEY, workspaceId TEXT NOT NULL, title TEXT NOT NULL, categoryId TEXT, parentTaskId TEXT, estimateMinutes INTEGER NOT NULL, deadlineEpochMs INTEGER, nextActionDateEpochDay INTEGER, nextActionMinuteOfDay INTEGER, zoneId TEXT NOT NULL, value INTEGER NOT NULL, energy TEXT NOT NULL, progress INTEGER NOT NULL, status TEXT NOT NULL, splittable INTEGER NOT NULL, sortOrder INTEGER NOT NULL, revision INTEGER NOT NULL, updatedAtEpochMs INTEGER NOT NULL, deletedAtEpochMs INTEGER, syncState TEXT NOT NULL)")
+                db.execSQL("INSERT INTO tasks_new SELECT id,workspaceId,title,categoryId,parentTaskId,estimateMinutes,deadlineEpochMs,nextActionDateEpochDay,nextActionMinuteOfDay,zoneId,value,energy,progress,status,splittable,sortOrder,revision,updatedAtEpochMs,deletedAtEpochMs,syncState FROM tasks")
+                db.execSQL("DROP TABLE tasks")
+                db.execSQL("ALTER TABLE tasks_new RENAME TO tasks")
+                db.execSQL("CREATE INDEX index_tasks_workspaceId ON tasks(workspaceId)")
+                db.execSQL("CREATE INDEX index_tasks_categoryId ON tasks(categoryId)")
+                db.execSQL("CREATE INDEX index_tasks_parentTaskId ON tasks(parentTaskId)")
+                db.execSQL("CREATE INDEX index_tasks_workspaceId_sortOrder ON tasks(workspaceId,sortOrder)")
+                db.execSQL("CREATE TABLE plans_new (id TEXT NOT NULL PRIMARY KEY, workspaceId TEXT NOT NULL, name TEXT NOT NULL, startsAtEpochMs INTEGER NOT NULL, endsAtEpochMs INTEGER NOT NULL, zoneId TEXT NOT NULL, archived INTEGER NOT NULL, revision INTEGER NOT NULL, updatedAtEpochMs INTEGER NOT NULL, deletedAtEpochMs INTEGER, syncState TEXT NOT NULL)")
+                db.execSQL("INSERT INTO plans_new SELECT id,workspaceId,name,startsAtEpochMs,endsAtEpochMs,zoneId,archived,revision,updatedAtEpochMs,deletedAtEpochMs,syncState FROM plans")
+                db.execSQL("DROP TABLE plans")
+                db.execSQL("ALTER TABLE plans_new RENAME TO plans")
+                db.execSQL("CREATE INDEX index_plans_workspaceId ON plans(workspaceId)")
+                db.execSQL("CREATE INDEX index_plans_startsAtEpochMs_endsAtEpochMs ON plans(startsAtEpochMs,endsAtEpochMs)")
+                for ((table, key) in listOf("outbox" to "clientMutationId", "conflicts" to "clientMutationId")) {
+                    val payloadColumns = if (table == "outbox") listOf("payloadJson") else listOf("localPayloadJson", "serverPayloadJson")
+                    for (column in payloadColumns) {
+                        db.query("SELECT $key,$column,entityType FROM $table WHERE lower(entityType) IN ('task','plan')").use { cursor ->
+                            while (cursor.moveToNext()) {
+                                val payload = runCatching { org.json.JSONObject(cursor.getString(1)) }.getOrNull() ?: continue
+                                if (cursor.getString(2).equals("task", true)) payload.remove("remainingEstimateMinutes") else payload.remove("kind")
+                                db.execSQL("UPDATE $table SET $column=? WHERE $key=?", arrayOf(payload.toString(), cursor.getString(0)))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE tasks ADD COLUMN sortOrder INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE tasks SET sortOrder = (SELECT COUNT(*) * 10 FROM tasks AS ranked WHERE ranked.workspaceId = tasks.workspaceId AND (COALESCE(ranked.nextActionDateEpochDay, 9223372036854775807) < COALESCE(tasks.nextActionDateEpochDay, 9223372036854775807) OR (COALESCE(ranked.nextActionDateEpochDay, 9223372036854775807) = COALESCE(tasks.nextActionDateEpochDay, 9223372036854775807) AND (LOWER(ranked.title) < LOWER(tasks.title) OR (LOWER(ranked.title) = LOWER(tasks.title) AND ranked.id < tasks.id)))))")
+                db.execSQL("UPDATE outbox SET payloadJson = CASE WHEN TRIM(payloadJson) = '{}' THEN '{\"sortOrder\":' || COALESCE((SELECT sortOrder FROM tasks WHERE tasks.id = outbox.entityId), 0) || '}' ELSE SUBSTR(TRIM(payloadJson), 1, LENGTH(TRIM(payloadJson)) - 1) || ',\"sortOrder\":' || COALESCE((SELECT sortOrder FROM tasks WHERE tasks.id = outbox.entityId), 0) || '}' END WHERE lower(entityType) = 'task' AND operation = 'upsert'")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tasks_workspaceId_sortOrder ON tasks(workspaceId,sortOrder)")
+            }
+        }
 
         val MIGRATION_4_5 = object : Migration(4, 5) {
             override fun migrate(db: SupportSQLiteDatabase) {

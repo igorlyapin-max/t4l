@@ -86,7 +86,8 @@ class StructuredLogger(private val context: Context) {
         val EVENT_NAMES = setOf(
             "application_started", "diagnostic_level_changed", "sync_started", "sync_succeeded", "sync_retry",
             "ui_action_failed", "backup_export_succeeded", "backup_export_failed", "backup_import_succeeded",
-            "backup_import_failed", "sync_conflict_resolution_queued", "pomodoro_notification_denied", "profile_actor_rebound",
+            "backup_import_failed", "sync_conflict_resolution_queued", "pomodoro_notification_denied", "pomodoro_settings_saved",
+            "profile_actor_rebound",
         )
         val ERROR_TYPES = setOf("IOException", "ConnectException", "UnknownHostException", "SocketTimeoutException", "IllegalArgumentException", "IllegalStateException", "SerializationException", "AEADBadTagException", "SecurityException", "Other")
     }

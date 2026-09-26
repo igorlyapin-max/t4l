@@ -56,6 +56,7 @@ builder.Services.AddDbContext<T4LDbContext>(options =>
     options.UseNpgsql(builder.Configuration.GetConnectionString("T4L")));
 builder.Services.AddSignalR();
 builder.Services.AddScoped<SyncService>();
+builder.Services.AddHostedService<CategoryTreeRetentionWorker>();
 builder.Services.AddScoped<WorkspaceTransferService>();
 builder.Services.AddScoped<UserProfileService>();
 builder.Services.AddHttpContextAccessor();
@@ -180,14 +181,96 @@ api.MapGet("/workspaces/{workspaceId:guid}/reports/aggregate", async (
 {
     await access.RequireAsync(workspaceId, MembershipRole.Viewer, ct);
     if (to <= from) throw new ArgumentException("to must be greater than from.");
+    var activeTreeIds = await db.CategoryTrees.AsNoTracking()
+        .Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && !x.Archived && x.PurgedAt == null)
+        .Select(x => x.Id).ToArrayAsync(ct);
     var events = await db.Events.AsNoTracking()
-        .Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && x.OccurredAt < to)
+        .Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && x.OccurredAt < to && activeTreeIds.Contains(x.CategoryTreeId))
         .ToArrayAsync(ct);
     var categories = await db.Categories.AsNoTracking()
-        .Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null)
+        .Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && !x.Archived && activeTreeIds.Contains(x.CategoryTreeId))
         .ToArrayAsync(ct);
     return Results.Ok(TimelineEngine.Aggregate(
         TimelineEngine.BuildIntervals(events, from, to, clock.GetUtcNow()), categories));
+});
+api.MapGet("/workspaces/{workspaceId:guid}/reports/distribution", async (
+    Guid workspaceId, DateTimeOffset from, DateTimeOffset? to, T4LDbContext db, WorkspaceAccess access, TimeProvider clock, CancellationToken ct) =>
+{
+    await access.RequireAsync(workspaceId, MembershipRole.Viewer, ct);
+    var now = clock.GetUtcNow();
+    var end = to is { } selected && selected < now ? selected : now;
+    if (end <= from) throw new ArgumentException("to must be greater than from.");
+    var activeTreeIds = await db.CategoryTrees.AsNoTracking()
+        .Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && !x.Archived && x.PurgedAt == null)
+        .Select(x => x.Id).ToArrayAsync(ct);
+    var events = await db.Events.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && x.OccurredAt < end && activeTreeIds.Contains(x.CategoryTreeId)).ToArrayAsync(ct);
+    var categories = await db.Categories.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null && !x.Archived && activeTreeIds.Contains(x.CategoryTreeId)).ToArrayAsync(ct);
+    var rows = TimelineEngine.Distribution(TimelineEngine.BuildIntervals(events, from, end, now), categories);
+    return Results.Ok(new { from, to = end, categories = rows });
+});
+api.MapGet("/workspaces/{workspaceId:guid}/plans/{planId:guid}/distribution", async (
+    Guid workspaceId, Guid planId, T4LDbContext db, WorkspaceAccess access, CancellationToken ct) =>
+{
+    await access.RequireAsync(workspaceId, MembershipRole.Viewer, ct);
+    var plan = await db.Plans.AsNoTracking().SingleOrDefaultAsync(x => x.Id == planId && x.WorkspaceId == workspaceId && x.DeletedAt == null, ct);
+    if (plan is null) return Results.NotFound();
+    var events = await db.PlannedEvents.AsNoTracking().Where(x => x.PlanId == planId && x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct);
+    var categories = await db.Categories.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct);
+    var allocations = await db.BudgetAllocations.AsNoTracking().Where(x => x.PlanId == planId && x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct);
+    var computed = TimelineEngine.Distribution(TimelineEngine.BuildPointIntervals(
+        events.Select(x => new TimelinePoint(x.Id, x.CategoryTreeId, x.CategoryId, x.TaskId, x.OccurredAt)), plan.StartsAt, plan.EndsAt), categories).ToDictionary(x => x.CategoryId);
+    var allocationMap = allocations.ToDictionary(x => x.CategoryId, x => x.OwnMinutes);
+    var categoryMap = categories.ToDictionary(x => x.Id);
+    var rows = categories.Select(category =>
+    {
+        var descendants = categories.Where(candidate =>
+        {
+            var current = candidate;
+            var visited = new HashSet<Guid>();
+            while (visited.Add(current.Id))
+            {
+                if (current.Id == category.Id) return true;
+                if (current.ParentId is not { } parent || !categoryMap.TryGetValue(parent, out var next) || next.CategoryTreeId != category.CategoryTreeId) return false;
+                current = next;
+            }
+            return false;
+        });
+        var own = allocationMap.TryGetValue(category.Id, out var minutes) ? (int?)minutes : null;
+        return new { categoryTreeId = category.CategoryTreeId, categoryId = category.Id, ownMinutes = own,
+            totalMinutes = descendants.Sum(x => allocationMap.GetValueOrDefault(x.Id)),
+            timelineOwnMillis = computed.GetValueOrDefault(category.Id)?.OwnMillis ?? 0,
+            timelineTotalMillis = computed.GetValueOrDefault(category.Id)?.TotalMillis ?? 0 };
+    }).ToArray();
+    return Results.Ok(new { planId, categories = rows });
+});
+api.MapGet("/workspaces/{workspaceId:guid}/tasks/{taskId:guid}/time", async (
+    Guid workspaceId, Guid taskId, T4LDbContext db, WorkspaceAccess access, TimeProvider clock, CancellationToken ct) =>
+{
+    await access.RequireAsync(workspaceId, MembershipRole.Viewer, ct);
+    var task = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(x => x.Id == taskId && x.WorkspaceId == workspaceId && x.DeletedAt == null, ct);
+    if (task is null) return Results.NotFound();
+    var now = clock.GetUtcNow();
+    var spent = await db.Database.SqlQuery<long>($"""
+        SELECT COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
+            (LEAST(COALESCE(next_event."OccurredAt", {now}), {now}) - event."OccurredAt")) * 1000)), 0)::bigint AS "Value"
+        FROM "Events" AS event
+        LEFT JOIN LATERAL (
+            SELECT successor."OccurredAt"
+            FROM "Events" AS successor
+            WHERE successor."WorkspaceId" = event."WorkspaceId"
+              AND successor."CategoryTreeId" = event."CategoryTreeId"
+              AND successor."DeletedAt" IS NULL
+              AND (successor."OccurredAt", successor."Id") > (event."OccurredAt", event."Id")
+            ORDER BY successor."OccurredAt", successor."Id"
+            LIMIT 1
+        ) AS next_event ON TRUE
+        WHERE event."WorkspaceId" = {workspaceId}
+          AND event."TaskId" = {taskId}
+          AND event."DeletedAt" IS NULL
+          AND event."OccurredAt" < {now}
+        """).SingleAsync(ct);
+    return Results.Ok(new { taskId, spentMillis = spent, estimateMinutes = task.EstimateMinutes,
+        deviationMillis = spent - task.EstimateMinutes * 60_000L, calculatedAt = now });
 });
 api.MapPost("/workspaces/{workspaceId:guid}/reports/intersection", async (
     Guid workspaceId,
@@ -242,7 +325,7 @@ api.MapGet("/sync/snapshot", async (Guid workspaceId, T4LDbContext db, Workspace
         .MaxAsync(x => (long?)x.Sequence, ct) ?? 0;
     return Results.Ok(new
     {
-        formatVersion = 2,
+        formatVersion = 3,
         exportedAt = DateTimeOffset.UtcNow,
         workspaceId,
         cursor,

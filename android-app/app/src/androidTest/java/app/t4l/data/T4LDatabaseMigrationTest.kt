@@ -69,9 +69,93 @@ class T4LDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate5To6AddsDeterministicTaskOrder() {
+        helper.createDatabase(TEST_DB_V6, 5).apply {
+            execSQL("INSERT INTO tasks (id,workspaceId,title,categoryId,parentTaskId,estimateMinutes,remainingEstimateMinutes,deadlineEpochMs,nextActionDateEpochDay,nextActionMinuteOfDay,zoneId,value,energy,progress,status,splittable,revision,updatedAtEpochMs,deletedAtEpochMs,syncState) VALUES ('b','workspace','Later',NULL,'parent',10,10,NULL,20,NULL,'UTC',50,'medium',0,'active',1,0,1,NULL,'SYNCED')")
+            execSQL("INSERT INTO tasks (id,workspaceId,title,categoryId,parentTaskId,estimateMinutes,remainingEstimateMinutes,deadlineEpochMs,nextActionDateEpochDay,nextActionMinuteOfDay,zoneId,value,energy,progress,status,splittable,revision,updatedAtEpochMs,deletedAtEpochMs,syncState) VALUES ('a','workspace','Sooner',NULL,'parent',10,10,NULL,10,NULL,'UTC',50,'medium',0,'active',1,0,1,NULL,'SYNCED')")
+            execSQL("INSERT INTO outbox VALUES ('mutation','client','workspace','task','b','upsert',0,'{\"title\":\"Later\"}',1,0,NULL)")
+            close()
+        }
+
+        helper.runMigrationsAndValidate(TEST_DB_V6, 6, true, T4LDatabase.MIGRATION_5_6).use { db ->
+            db.query("SELECT id,sortOrder FROM tasks ORDER BY sortOrder").use {
+                check(it.moveToFirst())
+                assertEquals("a", it.getString(0))
+                assertEquals(0, it.getInt(1))
+                check(it.moveToNext())
+                assertEquals("b", it.getString(0))
+                assertEquals(10, it.getInt(1))
+            }
+            db.query("SELECT payloadJson FROM outbox WHERE clientMutationId='mutation'").use {
+                check(it.moveToFirst())
+                assertEquals("{\"title\":\"Later\",\"sortOrder\":10}", it.getString(0))
+            }
+        }
+    }
+
+    @Test
+    fun migrate6To7PreservesUnifiedPlansAndRemovesObsoletePayloadFields() {
+        helper.createDatabase(TEST_DB_V7, 6).apply {
+            execSQL("INSERT INTO tasks (id,workspaceId,title,categoryId,parentTaskId,estimateMinutes,remainingEstimateMinutes,zoneId,value,energy,progress,status,splittable,sortOrder,revision,updatedAtEpochMs,syncState) VALUES ('task','workspace','Task','category',NULL,60,20,'UTC',50,'medium',0,'active',1,10,2,1000,'PENDING')")
+            execSQL("INSERT INTO plans (id,workspaceId,name,kind,startsAtEpochMs,endsAtEpochMs,zoneId,archived,revision,updatedAtEpochMs,syncState) VALUES ('plan','workspace','Mixed','budget',1000,2000,'UTC',0,3,1000,'PENDING')")
+            execSQL("INSERT INTO budget_allocations (id,workspaceId,planId,categoryId,ownMinutes,revision,updatedAtEpochMs,syncState) VALUES ('budget','workspace','plan','category',12,1,1000,'PENDING')")
+            execSQL("INSERT INTO planned_events (id,workspaceId,planId,categoryTreeId,categoryId,occurredAtEpochMs,revision,updatedAtEpochMs,syncState) VALUES ('event','workspace','plan','tree','category',1200,1,1000,'PENDING')")
+            execSQL("INSERT INTO outbox VALUES ('mutation','client','workspace','task','task','upsert',2,'{\"estimateMinutes\":60,\"remainingEstimateMinutes\":20}',1000,0,NULL)")
+            close()
+        }
+        helper.runMigrationsAndValidate(TEST_DB_V7, 7, true, T4LDatabase.MIGRATION_6_7).use { db ->
+            db.query("SELECT estimateMinutes FROM tasks WHERE id='task'").use { check(it.moveToFirst()); assertEquals(60, it.getInt(0)) }
+            db.query("SELECT name FROM plans WHERE id='plan'").use { check(it.moveToFirst()); assertEquals("Mixed", it.getString(0)) }
+            db.query("SELECT ownMinutes FROM budget_allocations WHERE id='budget'").use { check(it.moveToFirst()); assertEquals(12, it.getInt(0)) }
+            db.query("SELECT occurredAtEpochMs FROM planned_events WHERE id='event'").use { check(it.moveToFirst()); assertEquals(1200L, it.getLong(0)) }
+            db.query("SELECT payloadJson FROM outbox WHERE clientMutationId='mutation'").use { check(it.moveToFirst()); assertEquals("{\"estimateMinutes\":60}", it.getString(0)) }
+        }
+    }
+
+    @Test
+    fun migrate7To8GivesPreviouslyArchivedTreesFreshRetentionWindow() {
+        helper.createDatabase(TEST_DB_V8, 7).apply {
+            execSQL("INSERT INTO category_trees (id,workspaceId,name,role,sortOrder,archived,revision,updatedAtEpochMs,syncState) VALUES ('tree','workspace','Activity','primary',0,1,3,1000,'SYNCED')")
+            close()
+        }
+
+        val before = System.currentTimeMillis()
+        helper.runMigrationsAndValidate(TEST_DB_V8, 8, true, T4LDatabase.MIGRATION_7_8).use { db ->
+            db.query("SELECT trashedAtEpochMs,purgedAtEpochMs FROM category_trees WHERE id='tree'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(true, cursor.getLong(0) >= before)
+                assertEquals(true, cursor.isNull(1))
+            }
+        }
+    }
+
+    @Test
+    fun migrate8To9PreservesPendingAndConflictRows() {
+        helper.createDatabase(TEST_DB_V9, 8).apply {
+            execSQL("INSERT INTO outbox (clientMutationId,clientId,workspaceId,entityType,entityId,operation,baseRevision,payloadJson,createdAtEpochMs,attemptCount) VALUES ('mutation','client','workspace','task','task','upsert',1,'{}',1000,0)")
+            execSQL("INSERT INTO conflicts (clientMutationId,workspaceId,entityType,entityId,localPayloadJson,serverPayloadJson,serverRevision,createdAtEpochMs,operation) VALUES ('conflict','workspace','task','task','{}','{}',1,1000,'upsert')")
+            close()
+        }
+        helper.runMigrationsAndValidate(TEST_DB_V9, 9, true, T4LDatabase.MIGRATION_8_9).use { db ->
+            db.query("SELECT atomicGroupId FROM outbox WHERE clientMutationId='mutation'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(true, cursor.isNull(0))
+            }
+            db.query("SELECT linkedEventId FROM conflicts WHERE clientMutationId='conflict'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(true, cursor.isNull(0))
+            }
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
         const val TEST_DB_V4 = "migration-test-v4"
         const val TEST_DB_V5 = "migration-test-v5"
+        const val TEST_DB_V6 = "migration-test-v6"
+        const val TEST_DB_V7 = "migration-test-v7"
+        const val TEST_DB_V8 = "migration-test-v8"
+        const val TEST_DB_V9 = "migration-test-v9"
     }
 }

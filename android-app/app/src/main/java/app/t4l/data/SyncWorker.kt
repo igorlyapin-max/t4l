@@ -10,6 +10,9 @@ import java.time.LocalDate
 import java.time.LocalTime
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -34,24 +37,36 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         val removedPersonalItems = app.profileRepository.bindUser(bootstrap.userId)
         if (removedPersonalItems > 0) app.logger.event("profile_actor_rebound", mapOf("pendingCount" to removedPersonalItems.toString()))
         app.profileRepository.sync(bootstrap.userId)
-        val dao = app.database.dao(); val pending = dao.pendingMutations(app.repository.workspaceId)
-        if (pending.isNotEmpty()) {
-            val response = app.apiClient.push(PushBody(app.repository.clientId, pending.map { it.toMutation() }))
-            app.database.withTransaction {
-                response.results.forEach { result ->
-                    val local = pending.single { it.clientMutationId == result.clientMutationId }
-                    when (result.status) {
-                        "applied" -> dao.deleteMutations(listOf(result.clientMutationId))
-                        "conflict" -> {
-                            dao.putConflict(ConflictRow(result.clientMutationId, local.workspaceId, local.entityType, result.canonicalEntityId ?: local.entityId,
-                                local.payloadJson, result.serverEntity?.toString().orEmpty(), result.revision ?: 0,
-                                System.currentTimeMillis(), local.operation, result.errorCode))
-                            dao.deleteMutations(listOf(result.clientMutationId))
-                        }
-                        else -> dao.markMutationFailure(listOf(result.clientMutationId), result.errorCode ?: "rejected")
-                    }
-                }
+        val dao = app.database.dao()
+        while (!dao.hasUnresolvedAtomicConflict(app.repository.workspaceId)) {
+            val first = dao.pendingMutations(app.repository.workspaceId, 1).firstOrNull() ?: break
+            if (first.attemptCount > 0) break
+            val pending = first.atomicGroupId?.let { dao.pendingAtomicGroup(it) } ?: listOf(first)
+            if (pending.size !in 1..2 || pending.any { it.workspaceId != first.workspaceId }) {
+                dao.markMutationFailure(pending.map { it.clientMutationId }, "invalid_atomic_group")
+                break
             }
+            val response = app.apiClient.push(PushBody(app.repository.clientId, pending.map { it.toMutation() }))
+            val results = response.results.associateBy { it.clientMutationId }
+            if (pending.all { results[it.clientMutationId]?.status == "applied" }) {
+                app.database.withTransaction { dao.deleteMutations(pending.map { it.clientMutationId }) }
+                continue
+            }
+            val conflicted = pending.firstOrNull { results[it.clientMutationId]?.status == "conflict" && results[it.clientMutationId]?.serverEntity != null }
+            if (conflicted != null) {
+                val result = requireNotNull(results[conflicted.clientMutationId])
+                app.database.withTransaction {
+                    dao.putConflict(ConflictRow(result.clientMutationId, conflicted.workspaceId, conflicted.entityType, result.canonicalEntityId ?: conflicted.entityId,
+                        conflicted.payloadJson, result.serverEntity?.toString().orEmpty(), result.revision ?: 0,
+                        System.currentTimeMillis(), conflicted.operation,
+                        if (first.atomicGroupId != null) "atomic_group_${result.errorCode ?: "conflict"}" else result.errorCode,
+                        pending.firstOrNull { it.entityType.equals("event", true) }?.entityId))
+                    dao.deleteMutations(pending.map { it.clientMutationId })
+                }
+            } else {
+                dao.markMutationFailure(pending.map { it.clientMutationId }, response.results.firstOrNull { it.status != "applied" }?.errorCode ?: "atomic_group_aborted")
+            }
+            break
         }
         val workspaceId = app.repository.workspaceId; var cursor = dao.cursor(workspaceId)?.cursor ?: 0
         do {
@@ -66,7 +81,26 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
             }
             cursor = page.nextCursor
         } while (page.hasMore)
+        val invalidPlans = dao.invalidPlans(workspaceId).filter {
+            !dao.hasPendingForEntity("plan", it.id) && !dao.hasConflictForEntity("plan", it.id)
+        }
+        if (invalidPlans.isNotEmpty()) {
+            val snapshot = Json.parseToJsonElement(app.apiClient.snapshot(workspaceId)).jsonObject
+            val canonical = snapshot["plans"]?.jsonArray?.mapNotNull { value ->
+                val plan = value.jsonObject
+                plan["id"]?.jsonPrimitive?.contentOrNull?.let { it to plan }
+            }?.toMap().orEmpty()
+            app.database.withTransaction {
+                invalidPlans.forEach { local ->
+                    val payload = canonical[local.id] ?: return@forEach
+                    val revision = payload["revision"]?.jsonPrimitive?.longOrNull ?: return@forEach
+                    runCatching {
+                        applyApiChange(dao, workspaceId, ApiChange(0, "plan", local.id, revision, false, payload))
+                    }.onFailure { app.logger.event("plan_period_repair_skipped", mapOf("errorType" to it.javaClass.simpleName)) }
+                }
+            }
+        }
     }
 
-    private fun OutboxRow.toMutation() = ApiMutation(clientMutationId, workspaceId, entityType, entityId, operation, baseRevision, Json.parseToJsonElement(payloadJson) as JsonObject)
+    private fun OutboxRow.toMutation() = ApiMutation(clientMutationId, workspaceId, entityType, entityId, operation, baseRevision, Json.parseToJsonElement(payloadJson) as JsonObject, atomicGroupId)
 }

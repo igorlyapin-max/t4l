@@ -33,17 +33,26 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilledIconButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
@@ -67,8 +76,10 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.KeyboardType
@@ -102,60 +113,48 @@ fun ProfileAvatar(profile: UserProfileRow?, modifier: Modifier = Modifier, descr
 }
 
 @Composable
-fun HomeScreen(profile: UserProfileRow?, pomodoro: PomodoroState, vm: MainViewModel, padding: PaddingValues, onLifeClick: () -> Unit) {
-    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
-        if (maxWidth >= 700.dp) {
-            Row(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                Box(Modifier.weight(1f)) { LifeCountdownCard(profile, onLifeClick) }
-                Box(Modifier.weight(1f)) { PomodoroCard(pomodoro, vm) }
-            }
-        } else LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-            item { LifeCountdownCard(profile, onLifeClick) }
-            item { PomodoroCard(pomodoro, vm) }
-        }
-    }
-}
-
-@Composable
-private fun LifeCountdownCard(profile: UserProfileRow?, onClick: () -> Unit) {
+fun HeaderLifeCountdown(profile: UserProfileRow?, onClick: () -> Unit, modifier: Modifier = Modifier) {
     var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(profile?.birthDateEpochDay, profile?.lifeExpectancyYears) { while (true) { tick = System.currentTimeMillis(); delay(1_000) } }
     val birth = profile?.birthDateEpochDay?.let(LocalDate::ofEpochDay)
     val years = profile?.lifeExpectancyYears
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.life_countdown), style = MaterialTheme.typography.titleLarge)
-            if (birth == null || years == null) {
-                Text("—  —  —  —  —", style = MaterialTheme.typography.headlineSmall)
-                Text(stringResource(R.string.complete_profile_for_countdown))
-            } else {
-                val value = remember(birth, years, tick) { LifeClock.countdown(birth, years, ZonedDateTime.now()) }
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    if (maxWidth >= 420.dp) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        CountdownUnit(value.years, stringResource(R.string.years_unit)); CountdownUnit(value.days, stringResource(R.string.days_unit)); CountdownUnit(value.hours, stringResource(R.string.hours_unit)); CountdownUnit(value.minutes, stringResource(R.string.minutes_unit)); CountdownUnit(value.seconds, stringResource(R.string.seconds_unit))
-                    } else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { CountdownUnit(value.years, stringResource(R.string.years_unit)); CountdownUnit(value.days, stringResource(R.string.days_unit)); CountdownUnit(value.hours, stringResource(R.string.hours_unit)) }
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) { CountdownUnit(value.minutes, stringResource(R.string.minutes_unit)); CountdownUnit(value.seconds, stringResource(R.string.seconds_unit)) }
-                    }
-                }
-                Text(stringResource(R.string.life_estimate_notice), style = MaterialTheme.typography.bodySmall)
+    val value = remember(birth, years, tick) { if (birth != null && years != null) LifeClock.countdown(birth, years, ZonedDateTime.now()) else null }
+    val description = value?.let {
+        stringResource(
+            R.string.life_countdown_accessibility,
+            pluralStringResource(R.plurals.life_years, it.years.toInt(), it.years),
+            pluralStringResource(R.plurals.life_days, it.days.toInt(), it.days),
+            pluralStringResource(R.plurals.life_hours, it.hours.toInt(), it.hours),
+            pluralStringResource(R.plurals.life_minutes, it.minutes.toInt(), it.minutes),
+            pluralStringResource(R.plurals.life_seconds, it.seconds.toInt(), it.seconds),
+        )
+    } ?: stringResource(R.string.complete_profile_for_countdown)
+    TextButton(modifier = modifier.heightIn(min = 48.dp), onClick = onClick, contentPadding = PaddingValues(horizontal = 4.dp)) {
+        Text(
+            compactLifeCountdown(value),
+            maxLines = 1,
+            style = MaterialTheme.typography.labelLarge,
+            modifier = Modifier.clearAndSetSemantics { contentDescription = description },
+        )
+    }
+}
+
+@Composable
+fun HomeScreen(pomodoro: PomodoroState, padding: PaddingValues) {
+    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item { ScreenHeading(R.string.home) }
+        item {
+            Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                PomodoroCard(pomodoro, Modifier.fillMaxWidth().widthIn(max = 560.dp))
             }
         }
     }
 }
 
-@Composable private fun CountdownUnit(value: Long, label: String) = Column(horizontalAlignment = Alignment.CenterHorizontally) {
-    Text(value.toString(), style = MaterialTheme.typography.titleLarge); Text(label, style = MaterialTheme.typography.labelSmall)
-}
-
 @Composable
-private fun PomodoroCard(state: PomodoroState, vm: MainViewModel) {
+private fun PomodoroCard(state: PomodoroState, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    var mode by rememberSaveable(state.status, state.mode) { mutableStateOf(state.mode) }
-    var work by rememberSaveable(state.status, state.workMinutes) { mutableStateOf(state.workMinutes.toString()) }
-    var shortBreak by rememberSaveable(state.status, state.shortBreakMinutes) { mutableStateOf(state.shortBreakMinutes.toString()) }
-    var longBreak by rememberSaveable(state.status, state.longBreakMinutes) { mutableStateOf(state.longBreakMinutes.toString()) }
     var notificationDenied by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(state.status, state.endsAtEpochMs) { while (state.status == PomodoroStatus.RUNNING) { tick = System.currentTimeMillis(); delay(500) } }
     val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -169,13 +168,8 @@ private fun PomodoroCard(state: PomodoroState, vm: MainViewModel) {
         else -> NotificationCapability.DENIED
     }
     val remaining = remember(state, tick) { state.remainingMs(tick) }
-    val parsedWork = work.toIntOrNull(); val parsedShort = shortBreak.toIntOrNull(); val parsedLong = longBreak.toIntOrNull()
-    val configurationValid = parsedWork != null && parsedWork in 1..180 &&
-        parsedShort != null && parsedShort in 1..60 &&
-        parsedLong != null && parsedLong in 1..120
-    val configurationDirty = parsedWork != state.workMinutes || parsedShort != state.shortBreakMinutes || parsedLong != state.longBreakMinutes || mode != state.mode
     val phaseText = stringResource(when (state.phase) { PomodoroPhase.WORK -> R.string.work_phase; PomodoroPhase.SHORT_BREAK -> R.string.short_break; PomodoroPhase.LONG_BREAK -> R.string.long_break })
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Card(modifier) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(stringResource(R.string.pomodoro_timer), style = MaterialTheme.typography.titleLarge)
         Text(phaseText + if (state.mode == PomodoroMode.CLASSIC && state.phase == PomodoroPhase.WORK) " · ${stringResource(R.string.round_number, state.workRound)}" else "")
         Text("%02d:%02d".format(remaining / 60_000, remaining / 1_000 % 60), style = MaterialTheme.typography.displayMedium, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
@@ -187,34 +181,67 @@ private fun PomodoroCard(state: PomodoroState, vm: MainViewModel) {
             Text(stringResource(R.string.notification_denied_warning), color = MaterialTheme.colorScheme.error)
             TextButton(onClick = { context.startActivity(PomodoroRuntime.notificationSettings(context)) }) { Text(stringResource(R.string.open_notification_settings)) }
         }
-        if (state.status == PomodoroStatus.IDLE) {
-            PomodoroModeMenu(mode) { mode = it }
-            BoxWithConstraints(Modifier.fillMaxWidth()) {
-                if (maxWidth >= 420.dp) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MinuteField(work, { work = it }, stringResource(R.string.work_minutes), Modifier.weight(1f))
-                    MinuteField(shortBreak, { shortBreak = it }, stringResource(R.string.short_break_minutes), Modifier.weight(1f))
-                } else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    MinuteField(work, { work = it }, stringResource(R.string.work_minutes), Modifier.fillMaxWidth())
-                    MinuteField(shortBreak, { shortBreak = it }, stringResource(R.string.short_break_minutes), Modifier.fillMaxWidth())
-                }
-            }
-            if (mode == PomodoroMode.CLASSIC) MinuteField(longBreak, { longBreak = it }, stringResource(R.string.long_break_minutes), Modifier.fillMaxWidth())
-            if (configurationDirty) Text(stringResource(R.string.unsaved_timer_settings), style = MaterialTheme.typography.bodySmall)
-            OutlinedButton(enabled = configurationValid && configurationDirty, onClick = { vm.configurePomodoro(mode, requireNotNull(parsedWork), requireNotNull(parsedShort), requireNotNull(parsedLong)) }) { Text(stringResource(R.string.apply)) }
-        }
-        BoxWithConstraints(Modifier.fillMaxWidth()) {
-            val startButton: @Composable (Modifier) -> Unit = { modifier -> Button(modifier = modifier.heightIn(min = 48.dp), onClick = {
-                if (state.status == PomodoroStatus.RUNNING) PomodoroRuntime.pause(context) else {
-                    if (state.status == PomodoroStatus.IDLE && configurationDirty) vm.configurePomodoro(mode, requireNotNull(parsedWork), requireNotNull(parsedShort), requireNotNull(parsedLong))
-                    if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) else PomodoroRuntime.start(context)
-                }
-            }, enabled = state.status != PomodoroStatus.IDLE || configurationValid) { Text(stringResource(if (state.status == PomodoroStatus.RUNNING) R.string.pause else if (state.status == PomodoroStatus.PAUSED) R.string.resume else R.string.start)) } }
-            val resetButton: @Composable (Modifier) -> Unit = { modifier -> OutlinedButton(modifier = modifier.heightIn(min = 48.dp), onClick = { PomodoroRuntime.reset(context) }) { Text(stringResource(R.string.reset)) } }
-            val skipButton: @Composable (Modifier) -> Unit = { modifier -> OutlinedButton(modifier = modifier.heightIn(min = 48.dp), onClick = { PomodoroRuntime.skip(context) }) { Text(stringResource(R.string.skip)) } }
-            if (maxWidth >= 420.dp) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) { startButton(Modifier.weight(1f)); resetButton(Modifier.weight(1f)); skipButton(Modifier.weight(1f)) }
-            else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { startButton(Modifier.fillMaxWidth()); resetButton(Modifier.fillMaxWidth()); skipButton(Modifier.fillMaxWidth()) }
-        }
+        TimerControlButtons(
+            state = state,
+            onStartPause = {
+                if (state.status == PomodoroStatus.RUNNING) PomodoroRuntime.pause(context)
+                else if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                else PomodoroRuntime.start(context)
+            },
+            onReset = { PomodoroRuntime.reset(context) },
+            onSkip = { PomodoroRuntime.skip(context) },
+        )
     } }
+}
+
+@Composable
+internal fun TimerControlButtons(state: PomodoroState, onStartPause: () -> Unit, onReset: () -> Unit, onSkip: () -> Unit) {
+    val startDescription = stringResource(if (state.status == PomodoroStatus.RUNNING) R.string.pause else if (state.status == PomodoroStatus.PAUSED) R.string.resume else R.string.start)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterHorizontally), verticalAlignment = Alignment.CenterVertically) {
+        FilledIconButton(modifier = Modifier.size(56.dp), onClick = onStartPause) {
+            Icon(if (state.status == PomodoroStatus.RUNNING) Icons.Filled.Pause else Icons.Filled.PlayArrow, contentDescription = startDescription)
+        }
+        OutlinedIconButton(modifier = Modifier.size(48.dp), onClick = onReset) {
+            Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.reset))
+        }
+        OutlinedIconButton(modifier = Modifier.size(48.dp), onClick = onSkip) {
+            Icon(Icons.Filled.Close, contentDescription = stringResource(R.string.skip))
+        }
+    }
+}
+
+@Composable
+fun PomodoroSettingsScreen(state: PomodoroState, vm: MainViewModel, padding: PaddingValues) {
+    var mode by rememberSaveable(state.mode) { mutableStateOf(state.mode) }
+    var work by rememberSaveable(state.workMinutes) { mutableStateOf(state.workMinutes.toString()) }
+    var shortBreak by rememberSaveable(state.shortBreakMinutes) { mutableStateOf(state.shortBreakMinutes.toString()) }
+    var longBreak by rememberSaveable(state.longBreakMinutes) { mutableStateOf(state.longBreakMinutes.toString()) }
+    val parsedWork = work.toIntOrNull(); val parsedShort = shortBreak.toIntOrNull(); val parsedLong = longBreak.toIntOrNull()
+    val configurationValid = parsedWork != null && parsedWork in 1..180 &&
+        parsedShort != null && parsedShort in 1..60 &&
+        parsedLong != null && parsedLong in 1..120
+    val configurationDirty = parsedWork != state.workMinutes || parsedShort != state.shortBreakMinutes || parsedLong != state.longBreakMinutes || mode != state.mode
+    Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text(stringResource(R.string.pomodoro_timer), style = MaterialTheme.typography.titleLarge)
+        PomodoroModeMenu(mode) { mode = it }
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            if (maxWidth >= 420.dp) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                MinuteField(work, { work = it }, stringResource(R.string.work_minutes), Modifier.weight(1f))
+                MinuteField(shortBreak, { shortBreak = it }, stringResource(R.string.short_break_minutes), Modifier.weight(1f))
+            } else Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                MinuteField(work, { work = it }, stringResource(R.string.work_minutes), Modifier.fillMaxWidth())
+                MinuteField(shortBreak, { shortBreak = it }, stringResource(R.string.short_break_minutes), Modifier.fillMaxWidth())
+            }
+        }
+        if (mode == PomodoroMode.CLASSIC) MinuteField(longBreak, { longBreak = it }, stringResource(R.string.long_break_minutes), Modifier.fillMaxWidth())
+        if (state.status != PomodoroStatus.IDLE) Text(stringResource(R.string.timer_settings_next_phase_notice), style = MaterialTheme.typography.bodySmall)
+        if (configurationDirty) Text(stringResource(R.string.unsaved_timer_settings), style = MaterialTheme.typography.bodySmall)
+        Button(
+            enabled = configurationValid && configurationDirty,
+            modifier = Modifier.fillMaxWidth(),
+            onClick = { vm.configurePomodoro(mode, requireNotNull(parsedWork), requireNotNull(parsedShort), requireNotNull(parsedLong)) },
+        ) { Text(stringResource(R.string.apply)) }
+    }
 }
 
 @Composable private fun PomodoroModeMenu(value: PomodoroMode, onValue: (PomodoroMode) -> Unit) {
@@ -262,6 +289,7 @@ fun ProfileScreen(
         }
     }
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        item { ScreenHeading(R.string.profile) }
         if (!actorResolved) item { Text(stringResource(R.string.profile_identity_loading), color = MaterialTheme.colorScheme.primary) }
         if (profileConflict || avatarConflict) item { Text(stringResource(R.string.personal_conflict_explanation), color = MaterialTheme.colorScheme.error) }
         item { Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -270,7 +298,7 @@ fun ProfileScreen(
                 if (profile?.hasAvatar == true) TextButton(enabled = actorResolved && !avatarConflict, onClick = { confirmRemove = true }) { Text(stringResource(R.string.remove_photo)) }
             }
         } }
-        item { OutlinedTextField(birth, { birth = it }, Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.birth_date)) }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Ascii)) }
+        item { DateField(birth, stringResource(R.string.birth_date), { birth = it }, Modifier.fillMaxWidth(), invalid = birth.isNotBlank() && runCatching { LocalDate.parse(birth) }.getOrNull()?.isAfter(LocalDate.now()) != false, maxDate = LocalDate.now(), presets = DatePresets.BIRTH) }
         item { OutlinedTextField(expectancy, { expectancy = it }, Modifier.fillMaxWidth(), label = { Text(stringResource(R.string.life_expectancy)) }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)) }
         item { val parsedBirth = birth.takeIf(String::isNotBlank)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }; val parsedYears = expectancy.replace(',', '.').toDoubleOrNull()
             val valid = parsedBirth != null && !parsedBirth.isAfter(LocalDate.now()) && parsedYears != null && parsedYears in 0.1..130.0

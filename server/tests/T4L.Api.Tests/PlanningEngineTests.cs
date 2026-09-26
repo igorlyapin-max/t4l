@@ -32,8 +32,8 @@ public sealed class PlanningEngineTests
         var now = DateTimeOffset.Parse("2026-09-20T09:00:00Z", CultureInfo.InvariantCulture);
         var tasks = new[]
         {
-            new TaskEntity { Id = Guid.NewGuid(), RemainingEstimateMinutes = 90, Value = 100, Energy = EnergyLevel.High, Splittable = false },
-            new TaskEntity { Id = Guid.NewGuid(), RemainingEstimateMinutes = 30, Value = 50, Energy = EnergyLevel.High, Splittable = false }
+            new TaskEntity { Id = Guid.NewGuid(), EstimateMinutes = 90, Value = 100, Energy = EnergyLevel.High, Splittable = false },
+            new TaskEntity { Id = Guid.NewGuid(), EstimateMinutes = 30, Value = 50, Energy = EnergyLevel.High, Splittable = false }
         };
 
         var result = PlanningEngine.Recommend(tasks, 45, EnergyLevel.High, now);

@@ -47,11 +47,19 @@ Docker is required for PostgreSQL/runtime acceptance and container delivery. And
 
 The Android server URL and sync delay are editable in `Settings > Network`. A cold app start always requests a sync. Local changes are debounced using the selected delay (`0`, `5`, `15`, `30`, `60`, or `300` seconds; default `30`), while `Sync now` remains explicit. There is no periodic or every-foreground sync.
 
+An active-to-inactive task transition is a sync atomic group: the task upsert and, when the task owns the latest interval in its category tree, a taskless closing event share `atomicGroupId`. The server applies both or neither. A single task transition from older clients is rejected with `atomic_group_required`; legacy transition writes are not supported. Conflicted groups retain the closure event locally until the user resolves the task conflict.
+
+`Categorization > Deleted` retains archived trees for 30 days from the server-confirmed deletion time. Trees can be restored before expiry or permanently removed from the restorable list after their pending changes sync; the server purges expired entries hourly. Historical tree/category labels remain as read-only reference metadata so factual events and tasks keep their labels; this is an irreversible logical purge, not physical erasure of referenced rows. `Planner > Archived` shows read-only plan details and permits restore or deletion; deleting a plan also removes its budgets and planned events, never factual events. Time distribution reports include only active category trees. Android rejects malformed plan dates from sync rather than writing epoch-zero values, and repairs already-invalid local plan periods from a valid canonical snapshot where available.
+
+Restoring a tree does not alter the archived state of its categories. Trees archived by older clients may have every category archived; the tree editor then offers a confirmed `Restore hidden categories` action. Original individual archive choices cannot be reconstructed from old data, so this action deliberately restores all hidden categories only when the user requests it.
+
 Settings are split into `Network`, `Backup`, `Security`, `Diagnostics`, and `Language`. Language is an app-local English/Russian choice; before the first explicit choice Android follows the system locale.
 
 Backup export/import reports processing, completion, invalid-password, invalid-file, storage, network, and authorization outcomes without exposing raw server errors. Conflict resolution under `Settings > Diagnostics > Sync issues` compares the local and server values before either version can be confirmed; raw mutation JSON remains an advanced diagnostic action.
 
 `Home` is the Android start screen. It contains a device-local Tomato timer with simple and classic four-round modes, plus a statistical life countdown. The user-level profile (`/api/v1/me/profile`) and cropped avatar are cached offline and synchronized independently from the selected workspace. Disjoint profile-field edits are rebased automatically; overlapping profile edits and concurrent avatar edits require an explicit choice in `Settings > Diagnostics > Sync issues`. The active timer is deliberately not synchronized between devices and does not create `Track` events.
+
+`Tasks` has device-local remembered filters for status, flat/top-level/tree views, priority/next-step/deadline sorting, and four detail levels. A title tap opens the full editor; a left swipe or accessibility action starts inline rename. The `=` handle offers earlier/later moves in Priority sort mode; in another sort mode it asks before switching to Priority. Drag reorder is available only in Priority sort mode. Subtask lists use the same controls and presentation settings.
 
 Background timer completion uses a foreground service and exact alarm when Android grants that access. If exact alarms are disabled, the UI warns that the completion signal can be delayed. Android 13+ also requests notification permission; the running state remains based on the persisted deadline rather than notification delivery.
 
@@ -67,19 +75,20 @@ Release builds accept HTTPS only. Debug builds additionally accept literal loopb
 
 - Server schema v1 is intentionally unsupported. If startup reports `legacy_schema_not_supported`, recreate the development database instead of applying a lossy conversion.
 - Android database v1 is reset destructively. Database v2 migrates to v3 while preserving current entities and sync conflicts; v3 migrates to v4 with the user profile cache and offline profile/avatar queues; v4 migrates to v5 with profile base snapshots and explicit personal conflicts.
-- Backup import accepts only `formatVersion: 2` and validates the complete graph before a single transactional import.
+- Backup import accepts only `formatVersion: 3` and validates the complete graph before a single transactional import.
 
 ## Product model
 
 - `CategoryTree` is a classification tree such as Activity or Location. Categories are recursive and can be archived without deleting historical events.
 - Actual `TimeEvent` and `PlannedEvent` records are instantaneous switches; intervals end at the next event in the same tree.
 - A `Task` is independent from categories, belongs to either a category or a parent task, and supports active, paused, completed, and cancelled states plus append-only comments.
-- A `Plan` covers an arbitrary `[startsAt, endsAt)` period and is either `budget` or `timeline`. Plans may overlap. Budget totals are calculated independently for each category tree.
-- Backup export/import uses `formatVersion: 2`; v1 import and legacy Timeline/DailyPlan API contracts are intentionally unsupported.
+- A `Plan` covers an arbitrary `[startsAt, endsAt)` period and contains independent budget allocations and timeline events; either part can be empty. Plans may overlap. Own and descendant-inclusive timeline durations are calculated independently for each category tree in milliseconds; budget totals are separate user-entered values.
+- Task time is the sum of factual intervals directly tagged with that task, without subtasks. Android appends a taskless event in the same category tree when pausing, completing, or cancelling a currently tracked task; other sync clients must do the same in the same logical operation. The task-time projection reports signed `spentMillis - estimateMinutes * 60000`.
+- Backup export/import uses `formatVersion: 3`; earlier backup formats and legacy Timeline/DailyPlan API contracts are intentionally unsupported. Deploy server and Android together because the sync contract removed `Plan.kind` and `Task.remainingEstimateMinutes`.
 
 ## Current MVP boundaries
 
 - Stale-revision conflicts are retained locally and resolved explicitly with server, local, or edited payload choices; last-write-wins is not used. Natural-key budget allocations use a deterministic cross-client identity and conflicting revisions expose the canonical entity ID.
 - Uploaded avatars are decoded, dimension-limited, metadata-stripped, resized to at most 1024 px, and stored as canonical JPEG. Client diagnostics are disabled by default; `Basic` emits the fixed operational event/attribute allowlist, while temporary `Verbose` additionally emits bounded phase/status context through logcat, rotating local NDJSON, and the authenticated server sink.
 - The Android HTTP DTOs currently mirror the OpenAPI contract manually; generated-client drift enforcement is still pending.
-- Recurring plans, task/deadline notifications, drag-and-drop ordering, automatic scheduling, task budgeting, and archive restoration UI are outside the current iteration.
+- Recurring plans, task/deadline notifications, automatic scheduling, task budgeting, and archive restoration UI are outside the current iteration.

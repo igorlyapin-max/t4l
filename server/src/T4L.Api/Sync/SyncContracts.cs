@@ -9,7 +9,8 @@ public sealed record MutationDto(
     Guid EntityId,
     string Operation,
     long BaseRevision,
-    JsonElement Payload);
+    JsonElement Payload,
+    Guid? AtomicGroupId = null);
 
 public sealed record PushRequest(Guid ClientId, IReadOnlyList<MutationDto> Mutations);
 

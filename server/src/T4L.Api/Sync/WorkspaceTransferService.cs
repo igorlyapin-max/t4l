@@ -18,8 +18,8 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
     {
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 120)
             throw new ArgumentException("Workspace name must contain between 1 and 120 characters.");
-        if (!request.Snapshot.TryGetProperty("formatVersion", out var version) || version.GetInt32() != 2)
-            throw new ArgumentException("Unsupported backup formatVersion. Only formatVersion 2 is accepted.");
+        if (!request.Snapshot.TryGetProperty("formatVersion", out var version) || version.GetInt32() != 3)
+            throw new ArgumentException("Unsupported backup formatVersion. Only formatVersion 3 is accepted.");
 
         var trees = Read<CategoryTreeEntity>(request.Snapshot, "categoryTrees");
         var categories = Read<CategoryEntity>(request.Snapshot, "categories");
@@ -37,7 +37,20 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         var treeIds = Remap(trees); var categoryIds = Remap(categories);
         var taskIds = Remap(tasks); var planIds = Remap(plans);
 
-        foreach (var entity in trees) { entity.Id = treeIds[entity.Id]; Reset(entity, workspaceId, now); }
+        foreach (var entity in trees)
+        {
+            entity.Id = treeIds[entity.Id]; Reset(entity, workspaceId, now);
+            if (entity.PurgedAt is not null)
+            {
+                entity.Archived = true;
+                entity.TrashedAt = now;
+                entity.PurgedAt = now;
+            }
+            else
+            {
+                entity.TrashedAt = entity.Archived ? now : null;
+            }
+        }
         foreach (var entity in categories)
         {
             entity.Id = categoryIds[entity.Id];
@@ -126,7 +139,7 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         AssertAcyclic(categoryById.Keys, id => categoryById[id].ParentId, "Category hierarchy contains a cycle.");
         foreach (var task in tasks)
         {
-            if (string.IsNullOrWhiteSpace(task.Title) || (task.CategoryId is null) == (task.ParentTaskId is null) || task.EstimateMinutes < 0 || task.RemainingEstimateMinutes < 0 || task.RemainingEstimateMinutes > task.EstimateMinutes || task.Value is < 0 or > 100 || task.Progress is < 0 or > 100)
+            if (string.IsNullOrWhiteSpace(task.Title) || (task.CategoryId is null) == (task.ParentTaskId is null) || task.EstimateMinutes < 0 || task.Value is < 0 or > 100 || task.Progress is < 0 or > 100)
                 throw new ArgumentException("Invalid task graph.");
             if (task.CategoryId is { } categoryId && !categoryById.ContainsKey(categoryId)) throw new ArgumentException("Broken task category reference.");
             if (task.ParentTaskId is { } parentId && !taskById.ContainsKey(parentId)) throw new ArgumentException("Broken task parent reference.");
@@ -135,9 +148,9 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         if (events.Any(x => !treeIds.Contains(x.CategoryTreeId) || x.CategoryId is { } id && !categoryById.ContainsKey(id) || x.TaskId is { } taskId && !taskById.ContainsKey(taskId))) throw new ArgumentException("Invalid event references.");
         if (comments.Any(x => string.IsNullOrWhiteSpace(x.Text) || x.Text.Length > 4000 || !taskById.ContainsKey(x.TaskId))) throw new ArgumentException("Invalid task comment.");
         if (plans.Any(x => string.IsNullOrWhiteSpace(x.Name) || x.EndsAt <= x.StartsAt)) throw new ArgumentException("Invalid plan.");
-        if (allocations.Any(x => x.OwnMinutes < 0 || !planById.TryGetValue(x.PlanId, out var plan) || plan.Kind != PlanKind.Budget || !categoryById.ContainsKey(x.CategoryId))) throw new ArgumentException("Invalid budget allocation.");
+        if (allocations.Any(x => x.OwnMinutes < 0 || !planById.ContainsKey(x.PlanId) || !categoryById.ContainsKey(x.CategoryId))) throw new ArgumentException("Invalid budget allocation.");
         if (allocations.GroupBy(x => (x.PlanId, x.CategoryId)).Any(x => x.Count() > 1)) throw new ArgumentException("Duplicate budget allocation.");
-        if (plannedEvents.Any(x => !planById.TryGetValue(x.PlanId, out var plan) || plan.Kind != PlanKind.Timeline || x.OccurredAt < plan.StartsAt || x.OccurredAt >= plan.EndsAt || !treeIds.Contains(x.CategoryTreeId) || x.CategoryId is { } id && !categoryById.ContainsKey(id) || x.TaskId is { } taskId && !taskById.ContainsKey(taskId))) throw new ArgumentException("Invalid planned event.");
+        if (plannedEvents.Any(x => !planById.TryGetValue(x.PlanId, out var plan) || x.OccurredAt < plan.StartsAt || x.OccurredAt >= plan.EndsAt || !treeIds.Contains(x.CategoryTreeId) || x.CategoryId is { } id && !categoryById.ContainsKey(id) || x.TaskId is { } taskId && !taskById.ContainsKey(taskId))) throw new ArgumentException("Invalid planned event.");
     }
 
     private static void AssertAcyclic(IEnumerable<Guid> ids, Func<Guid, Guid?> parent, string message)

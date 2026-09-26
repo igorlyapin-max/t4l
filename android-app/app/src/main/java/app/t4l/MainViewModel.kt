@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import app.t4l.data.DashboardState
+import app.t4l.data.CategoryPlacement
 import app.t4l.data.LocalReportRow
 import app.t4l.data.PlannerState
 import app.t4l.data.T4LRepository
@@ -35,6 +36,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val personalConflicts: StateFlow<List<PersonalConflictRow>> = app.profileRepository.personalConflicts.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
     val profileActorResolved: StateFlow<Boolean> = app.profileRepository.actorResolved
     val pomodoro: StateFlow<PomodoroState> = app.pomodoroStore.state
+    val taskListSettings: StateFlow<TaskListSettings> = app.taskListSettings.state
     val uiFeedback = MutableStateFlow<UiFeedback?>(null)
     val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
     private var pendingEncryptedBackup: String? = null
@@ -42,27 +44,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun createStarterData() = mutate { repository.createStarterData() }
     fun createCategoryTree(name: String) = mutate { repository.createCategoryTree(name) }
     fun addCategory(treeId: String, name: String, parentId: String? = null) = mutate { repository.addCategory(treeId, name, parentId) }
+    fun moveCategory(id: String, placement: CategoryPlacement) = mutate { repository.moveCategory(id, placement) }
     fun renameCategory(id: String, name: String) = mutate { repository.renameCategory(id, name) }
     fun renameCategoryTree(id: String, name: String) = mutate { repository.renameCategoryTree(id, name) }
     fun archiveCategory(id: String) = mutate { repository.archiveCategory(id) }
     fun archiveCategoryTree(id: String) = mutate { repository.archiveCategoryTree(id) }
+    fun restoreCategoryTree(id: String) = mutate { repository.restoreCategoryTree(id) }
+    fun restoreArchivedCategories(treeId: String) = mutate { repository.restoreArchivedCategories(treeId) }
+    fun purgeCategoryTree(id: String) = mutate { repository.purgeCategoryTree(id) }
     fun switch(treeId: String, categoryId: String?) = mutate { repository.switchCategory(treeId, categoryId) }
     fun addEvent(treeId: String, categoryId: String?, at: Long, taskId: String? = null, onComplete: ((Boolean) -> Unit)? = null) = mutate(onComplete) { repository.addEvent(treeId, categoryId, at, taskId) }
-    fun updateEvent(id: String, at: Long) = mutate { repository.updateEvent(id, at) }
+    fun updateEvent(id: String, treeId: String, categoryId: String?, taskId: String?, at: Long, onComplete: ((Boolean) -> Unit)? = null) =
+        mutate(onComplete) { repository.updateEvent(id, treeId, categoryId, taskId, at) }
     fun deleteEvent(id: String) = mutate { repository.deleteEvent(id) }
     fun createTask(title: String, categoryId: String?, parentTaskId: String?, estimate: Int, nextAction: LocalDate, nextMinute: Int?, deadline: Long?, onComplete: ((Boolean) -> Unit)? = null) =
         mutate(onComplete) { repository.createTask(title, categoryId, parentTaskId, estimate, nextAction, nextMinute, deadline) }
     fun updateTask(id: String, title: String, categoryId: String?, estimate: Int, nextAction: LocalDate, nextMinute: Int?, deadline: Long?, onComplete: ((Boolean) -> Unit)? = null) =
         mutate(onComplete) { repository.updateTask(id, title, categoryId, estimate, nextAction, nextMinute, deadline) }
+    fun renameTask(id: String, title: String) = mutate { repository.renameTask(id, title) }
+    fun updateTaskDetails(id: String, title: String, categoryId: String?, parentTaskId: String?, estimate: Int,
+        nextAction: LocalDate?, nextMinute: Int?, deadline: Long?, value: Int, energy: String, progress: Int, status: String,
+        splittable: Boolean, onComplete: ((Boolean) -> Unit)? = null) = mutate(onComplete) {
+        repository.updateTaskDetails(id, title, categoryId, parentTaskId, estimate, nextAction, nextMinute, deadline, value, energy, progress, status, splittable)
+    }
+    fun reorderTask(id: String, targetId: String, after: Boolean) = mutate { repository.reorderTask(id, targetId, after) }
+    fun updateTaskListSettings(value: TaskListSettings) = app.taskListSettings.update(value)
     fun setTaskStatus(id: String, status: String) = mutate { repository.setTaskStatus(id, status) }
     fun deleteTask(id: String) = mutate { repository.deleteTask(id) }
     fun addTaskComment(id: String, text: String) = mutate { repository.addTaskComment(id, text) }
     fun startTask(id: String) = mutate { repository.startTask(id) }
-    fun createPlan(name: String, kind: String, startsAt: Long, endsAt: Long) = mutate { repository.createPlan(name, kind, startsAt, endsAt) }
+    fun createPlan(name: String, startsAt: Long, endsAt: Long) = mutate { repository.createPlan(name, startsAt, endsAt) }
+    fun updatePlanPeriod(id: String, startsAt: Long, endsAt: Long, onComplete: ((Boolean) -> Unit)? = null) =
+        mutate(onComplete) { repository.updatePlanPeriod(id, startsAt, endsAt) }
     fun archivePlan(id: String) = mutate { repository.archivePlan(id) }
+    fun restorePlan(id: String) = mutate { repository.restorePlan(id) }
+    fun deletePlan(id: String) = mutate { repository.deletePlan(id) }
     fun setBudget(planId: String, categoryId: String, minutes: Int) = mutate { repository.setBudget(planId, categoryId, minutes) }
     fun addPlannedEvent(planId: String, treeId: String, categoryId: String?, at: Long, taskId: String? = null, onComplete: ((Boolean) -> Unit)? = null) = mutate(onComplete) { repository.addPlannedEvent(planId, treeId, categoryId, at, taskId) }
-    fun updatePlannedEvent(id: String, at: Long) = mutate { repository.updatePlannedEvent(id, at) }
+    fun updatePlannedEvent(id: String, treeId: String, categoryId: String?, taskId: String?, at: Long, onComplete: ((Boolean) -> Unit)? = null) =
+        mutate(onComplete) { repository.updatePlannedEvent(id, treeId, categoryId, taskId, at) }
     fun deletePlannedEvent(id: String) = mutate { repository.deletePlannedEvent(id) }
 
     fun reportToday(now: Long = System.currentTimeMillis()): List<LocalReportRow> {
@@ -98,9 +118,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removeAvatar() = mutate { app.profileRepository.removeAvatar() }
     fun resolvePersonalConflictUseServer(id: String) = resolveConflict(id) { app.profileRepository.resolveConflictUseServer(id) }
     fun resolvePersonalConflictUseLocal(id: String) = resolveConflict(id) { app.profileRepository.resolveConflictUseLocal(id) }
-    fun configurePomodoro(mode: PomodoroMode, work: Int, shortBreak: Int, longBreak: Int) =
+    fun configurePomodoro(mode: PomodoroMode, work: Int, shortBreak: Int, longBreak: Int) {
+        val appliesNextPhase = app.pomodoroStore.state.value.status != PomodoroStatus.IDLE
         runCatching { app.pomodoroStore.configure(mode, work, shortBreak, longBreak) }
+            .onSuccess {
+                uiFeedback.value = UiFeedback(
+                    kind = if (appliesNextPhase) UiMessageKind.POMODORO_SETTINGS_SAVED_FOR_NEXT_PHASE else UiMessageKind.POMODORO_SETTINGS_SAVED,
+                )
+                app.logger.event("pomodoro_settings_saved", mapOf("status" to if (appliesNextPhase) "active" else "idle"))
+            }
             .onFailure(::showFailure)
+    }
 
     fun exportBackup(destination: Uri, password: CharArray? = null) = viewModelScope.launch {
         backupState.value = BackupUiState.Exporting

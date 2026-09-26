@@ -4,6 +4,9 @@ import app.t4l.data.ConflictRow
 import app.t4l.data.CategoryRow
 import app.t4l.data.TaskRow
 import app.t4l.data.HttpStatusException
+import app.t4l.data.SyncPhase
+import app.t4l.data.SyncUiState
+import app.t4l.domain.LifeCountdown
 import java.io.IOException
 import java.util.Locale
 import javax.crypto.AEADBadTagException
@@ -27,6 +30,8 @@ enum class UiMessageKind {
     BACKUP_EXPORT_SUCCEEDED,
     BACKUP_IMPORT_SUCCEEDED,
     CONFLICT_RESOLUTION_QUEUED,
+    POMODORO_SETTINGS_SAVED,
+    POMODORO_SETTINGS_SAVED_FOR_NEXT_PHASE,
 }
 
 data class UiFeedback(val id: Long = System.nanoTime(), val kind: UiMessageKind, val count: Int? = null)
@@ -39,6 +44,21 @@ sealed interface BackupUiState {
 }
 
 enum class NotificationCapability { GRANTED, DENIED, NOT_REQUIRED }
+
+enum class SyncIndicatorState { HEALTHY, NEEDS_ATTENTION }
+
+internal fun syncIndicatorState(state: SyncUiState, personalConflictCount: Int = 0): SyncIndicatorState =
+    if (
+        state.pending.isNotEmpty() ||
+        state.conflicts.isNotEmpty() ||
+        personalConflictCount > 0 ||
+        state.runtime.phase == SyncPhase.SYNCING ||
+        state.runtime.phase == SyncPhase.RETRY
+    ) SyncIndicatorState.NEEDS_ATTENTION else SyncIndicatorState.HEALTHY
+
+internal fun compactLifeCountdown(value: LifeCountdown?): String = value?.let {
+    "%02d-%03d-%02d-%02d-%02d".format(Locale.ROOT, it.years, it.days, it.hours, it.minutes, it.seconds)
+} ?: "-- --- -- -- --"
 
 internal object UiErrorMapper {
     fun map(error: Throwable, backup: Boolean = false): UiMessageKind {
@@ -109,6 +129,7 @@ internal fun budgetCategoryItems(
     categories: List<CategoryRow>,
     ownMinutes: Map<String, Int>,
     hideRedundant: Boolean,
+    timelineOwnMillis: Map<String, Long> = emptyMap(),
 ): List<BudgetCategoryItem> {
     val children = categories.groupBy { it.parentId }
     val result = mutableListOf<BudgetCategoryItem>()
@@ -119,7 +140,7 @@ internal fun budgetCategoryItems(
             .sortedWith(compareBy<CategoryRow> { it.sortOrder }.thenBy { it.name })
             .forEach { category ->
                 if (!visited.add(category.id)) return@forEach
-                val visible = !hideRedundant || (ownMinutes[category.id] ?: 0) > 0 || children[category.id].orEmpty().size > 1
+                val visible = !hideRedundant || (ownMinutes[category.id] ?: 0) > 0 || (timelineOwnMillis[category.id] ?: 0) > 0 || children[category.id].orEmpty().size > 1
                 if (visible) result += BudgetCategoryItem(category, depth)
                 visit(category.id, if (visible) depth + 1 else depth)
             }

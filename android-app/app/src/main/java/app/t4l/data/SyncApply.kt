@@ -19,12 +19,17 @@ internal suspend fun applyApiChange(dao: T4LDao, defaultWorkspace: String, chang
     val updated = p.instant("updatedAt") ?: System.currentTimeMillis()
     val deleted = p.instant("deletedAt")
     when (change.entityType.lowercase()) {
-        "categorytree" -> dao.putCategoryTree(CategoryTreeRow(change.entityId, workspace, p.text("name").orEmpty(), p.text("role") ?: "standard", p.int("sortOrder"), p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED))
+        "categorytree" -> dao.putCategoryTree(CategoryTreeRow(change.entityId, workspace, p.text("name").orEmpty(), p.text("role") ?: "standard", p.int("sortOrder"), p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED, p.instant("trashedAt"), p.instant("purgedAt")))
         "category" -> dao.putCategories(listOf(CategoryRow(change.entityId, workspace, p.text("categoryTreeId").orEmpty(), p.text("parentId"), p.text("name").orEmpty(), p.text("loadType") ?: "light", p.int("sortOrder"), p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED)))
         "event" -> dao.putEvent(EventRow(change.entityId, workspace, p.text("categoryTreeId").orEmpty(), p.text("categoryId"), p.text("taskId"), p.instant("occurredAt") ?: 0, p.text("zoneId") ?: "UTC", p.text("source") ?: "manual", p.text("note"), change.revision, updated, deleted, LocalSyncState.SYNCED))
-        "task" -> dao.putTask(TaskRow(change.entityId, workspace, p.text("title").orEmpty(), p.text("categoryId"), p.text("parentTaskId"), p.int("estimateMinutes"), p.int("remainingEstimateMinutes"), p.instant("deadline"), p.text("nextActionDate")?.let(LocalDate::parse)?.toEpochDay(), p.text("nextActionTime")?.let(LocalTime::parse)?.let { it.hour * 60 + it.minute }, p.text("zoneId") ?: "UTC", p.int("value"), p.text("energy") ?: "medium", p.int("progress"), p.text("status") ?: "active", p.bool("splittable"), change.revision, updated, deleted, LocalSyncState.SYNCED))
+        "task" -> dao.putTask(TaskRow(change.entityId, workspace, p.text("title").orEmpty(), p.text("categoryId"), p.text("parentTaskId"), p.int("estimateMinutes"), p.instant("deadline"), p.text("nextActionDate")?.let(LocalDate::parse)?.toEpochDay(), p.text("nextActionTime")?.let(LocalTime::parse)?.let { it.hour * 60 + it.minute }, p.text("zoneId") ?: "UTC", p.int("value"), p.text("energy") ?: "medium", p.int("progress"), p.text("status") ?: "active", p.bool("splittable"), p.int("sortOrder"), change.revision, updated, deleted, LocalSyncState.SYNCED))
         "taskcomment" -> dao.putTaskComment(TaskCommentRow(change.entityId, workspace, p.text("taskId").orEmpty(), p.text("authorId").orEmpty(), p.text("text").orEmpty(), change.revision, updated, deleted, LocalSyncState.SYNCED))
-        "plan" -> dao.putPlan(PlanRow(change.entityId, workspace, p.text("name").orEmpty(), p.text("kind") ?: "timeline", p.instant("startsAt") ?: 0, p.instant("endsAt") ?: 0, p.text("zoneId") ?: "UTC", p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED))
+        "plan" -> {
+            val startsAt = requireNotNull(p.instant("startsAt")) { "Invalid plan startsAt in sync change ${change.entityId}" }
+            val endsAt = requireNotNull(p.instant("endsAt")) { "Invalid plan endsAt in sync change ${change.entityId}" }
+            require(endsAt > startsAt) { "Invalid plan period in sync change ${change.entityId}" }
+            dao.putPlan(PlanRow(change.entityId, workspace, p.text("name").orEmpty(), startsAt, endsAt, p.text("zoneId") ?: "UTC", p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED))
+        }
         "budgetallocation" -> dao.putBudgetAllocation(BudgetAllocationRow(change.entityId, workspace, p.text("planId").orEmpty(), p.text("categoryId").orEmpty(), p.int("ownMinutes"), change.revision, updated, deleted, LocalSyncState.SYNCED))
         "plannedevent" -> dao.putPlannedEvent(PlannedEventRow(change.entityId, workspace, p.text("planId").orEmpty(), p.text("categoryTreeId").orEmpty(), p.text("categoryId"), p.text("taskId"), p.instant("occurredAt") ?: 0, p.text("note"), change.revision, updated, deleted, LocalSyncState.SYNCED))
     }

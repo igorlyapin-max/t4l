@@ -68,7 +68,7 @@ public sealed class SyncHardeningTests
         {
             Mutation("categoryTree", treeId, new { name = "Activity", role = "primary", sortOrder = 0, archived = false }),
             Mutation("category", categoryId, new { categoryTreeId = treeId, parentId = (Guid?)null, name = "Work", loadType = "focus", sortOrder = 0, archived = false }),
-            Mutation("plan", planId, new { name = "Week", kind = "budget", startsAt = "2026-09-21T00:00:00Z", endsAt = "2026-09-28T00:00:00Z", zoneId = "Europe/Moscow", archived = false })
+            Mutation("plan", planId, new { name = "Week", startsAt = "2026-09-21T00:00:00Z", endsAt = "2026-09-28T00:00:00Z", zoneId = "Europe/Moscow", archived = false })
         };
         var setupResult = await sync.PushAsync(new PushRequest(Guid.NewGuid(), setup), ct);
         Assert.All(setupResult.Results, x => Assert.Equal("applied", x.Status));
@@ -84,6 +84,128 @@ public sealed class SyncHardeningTests
 
         MutationDto Mutation(string type, Guid id, object payload) => new(
             Guid.NewGuid(), workspaceId, type, id, "upsert", 0, JsonSerializer.SerializeToElement(payload));
+    });
+
+    [Fact]
+    public Task CategoryTreeCanBeRestoredThenPermanentlyPurged() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var id = Guid.NewGuid();
+        var client = Guid.NewGuid();
+        async Task<MutationResult> Push(string operation, long revision, bool archived) =>
+            (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+                "categoryTree", id, operation, revision,
+                JsonSerializer.SerializeToElement(new { name = "Activity", role = "primary", archived, sortOrder = 0 }))]), ct)).Results.Single();
+
+        Assert.Equal("applied", (await Push("upsert", 0, false)).Status);
+        Assert.Equal("applied", (await Push("upsert", 1, true)).Status);
+        Assert.NotNull((await db.CategoryTrees.SingleAsync(x => x.Id == id, ct)).TrashedAt);
+        Assert.Equal("applied", (await Push("upsert", 2, false)).Status);
+        Assert.Null((await db.CategoryTrees.SingleAsync(x => x.Id == id, ct)).TrashedAt);
+        Assert.Equal("applied", (await Push("upsert", 3, true)).Status);
+        Assert.Equal("applied", (await Push("purge", 4, true)).Status);
+        Assert.NotNull((await db.CategoryTrees.SingleAsync(x => x.Id == id, ct)).PurgedAt);
+        Assert.Equal("category_tree_purged", (await Push("upsert", 5, false)).ErrorCode);
+    });
+
+    [Fact]
+    public Task ArchivedTreeRejectsNewFactsButPreservesHistoricalTimeEditsAndCategoryState() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var workspace = DevelopmentIdentity.WorkspaceId;
+        var client = Guid.NewGuid(); var tree = Guid.NewGuid(); var category = Guid.NewGuid(); var fact = Guid.NewGuid(); var plan = Guid.NewGuid(); var planned = Guid.NewGuid();
+        async Task<MutationResult> Push(string type, Guid id, long revision, object payload) =>
+            (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), workspace, type, id,
+                "upsert", revision, JsonSerializer.SerializeToElement(payload))]), ct)).Results.Single();
+        Assert.Equal("applied", (await Push("categoryTree", tree, 0, new { name = "Activity", role = "primary", archived = false })).Status);
+        Assert.Equal("applied", (await Push("category", category, 0, new { categoryTreeId = tree, name = "Work", archived = false })).Status);
+        Assert.Equal("applied", (await Push("event", fact, 0, new { categoryTreeId = tree, categoryId = category, occurredAt = "2026-09-22T09:00:00Z" })).Status);
+        Assert.Equal("applied", (await Push("plan", plan, 0, new { name = "Day", startsAt = "2026-09-22T00:00:00Z", endsAt = "2026-09-23T00:00:00Z", archived = false })).Status);
+        Assert.Equal("applied", (await Push("plannedEvent", planned, 0, new { planId = plan, categoryTreeId = tree, categoryId = category, occurredAt = "2026-09-22T09:00:00Z" })).Status);
+        Assert.Equal("applied", (await Push("category", category, 1, new { categoryTreeId = tree, name = "Work", archived = true })).Status);
+        Assert.Equal("applied", (await Push("categoryTree", tree, 1, new { name = "Activity", role = "primary", archived = true })).Status);
+        Assert.Equal("category_tree_not_found", (await Push("event", Guid.NewGuid(), 0, new { categoryTreeId = tree, categoryId = category, occurredAt = "2026-09-22T10:00:00Z" })).ErrorCode);
+        Assert.Equal("applied", (await Push("event", fact, 1, new { categoryTreeId = tree, categoryId = category, occurredAt = "2026-09-22T09:15:00Z" })).Status);
+        Assert.Equal("applied", (await Push("plannedEvent", planned, 1, new { planId = plan, categoryTreeId = tree, categoryId = category, occurredAt = "2026-09-22T09:15:00Z" })).Status);
+        Assert.Equal("category_tree_not_found", (await Push("plannedEvent", Guid.NewGuid(), 0, new { planId = plan, categoryTreeId = tree, categoryId = category, occurredAt = "2026-09-22T10:00:00Z" })).ErrorCode);
+        Assert.Equal("applied", (await Push("categoryTree", tree, 2, new { name = "Activity", role = "primary", archived = false })).Status);
+        Assert.True((await db.Categories.SingleAsync(x => x.Id == category, ct)).Archived);
+    });
+
+    [Fact]
+    public Task TaskClosureGroupCommitsBothOrNeitherAndRetriesIdempotently() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var workspace = DevelopmentIdentity.WorkspaceId;
+        var client = Guid.NewGuid(); var tree = Guid.NewGuid(); var category = Guid.NewGuid(); var task = Guid.NewGuid(); var start = Guid.NewGuid();
+        async Task<MutationResult> Push(string type, Guid id, long revision, object payload) =>
+            (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), workspace, type, id,
+                "upsert", revision, JsonSerializer.SerializeToElement(payload))]), ct)).Results.Single();
+        Assert.Equal("applied", (await Push("categoryTree", tree, 0, new { name = "Activity", role = "primary", archived = false })).Status);
+        Assert.Equal("applied", (await Push("category", category, 0, new { categoryTreeId = tree, name = "Work", archived = false })).Status);
+        Assert.Equal("applied", (await Push("task", task, 0, new { title = "Task", categoryId = category, status = "active", nextActionDate = "2026-09-26", estimateMinutes = 30, sortOrder = 0 })).Status);
+        Assert.Equal("applied", (await Push("event", start, 0, new { categoryTreeId = tree, categoryId = category, taskId = task, occurredAt = "2026-09-22T09:00:00Z" })).Status);
+
+        var groupId = Guid.NewGuid(); var closeId = Guid.NewGuid();
+        var taskMutation = new MutationDto(Guid.NewGuid(), workspace, "task", task, "upsert", 1,
+            JsonSerializer.SerializeToElement(new { title = "Task", categoryId = category, status = "paused", estimateMinutes = 30, sortOrder = 0 }), groupId);
+        var invalidClose = new MutationDto(Guid.NewGuid(), workspace, "event", closeId, "upsert", 0,
+            JsonSerializer.SerializeToElement(new { categoryTreeId = tree, categoryId = category, taskId = task, occurredAt = "2026-09-22T10:00:00Z" }), groupId);
+        var rejected = await sync.PushAsync(new PushRequest(client, [taskMutation, invalidClose]), ct);
+        Assert.All(rejected.Results, x => Assert.Equal("rejected", x.Status));
+        Assert.Equal(TaskState.Active, (await db.Tasks.SingleAsync(x => x.Id == task, ct)).Status);
+        Assert.False(await db.Events.AnyAsync(x => x.Id == closeId, ct));
+        Assert.Equal("atomic_group_required", (await Push("task", task, 1, new { title = "Task", categoryId = category, status = "paused", estimateMinutes = 30, sortOrder = 0 })).ErrorCode);
+
+        var close = invalidClose with { Payload = JsonSerializer.SerializeToElement(new { categoryTreeId = tree, categoryId = category, taskId = (Guid?)null, occurredAt = "2026-09-22T10:00:00Z" }) };
+        var accepted = await sync.PushAsync(new PushRequest(client, [close, taskMutation]), ct);
+        Assert.All(accepted.Results, x => Assert.Equal("applied", x.Status));
+        Assert.Equal(TaskState.Paused, (await db.Tasks.SingleAsync(x => x.Id == task, ct)).Status);
+        Assert.True(await db.Events.AnyAsync(x => x.Id == closeId, ct));
+        var repeated = await sync.PushAsync(new PushRequest(client, [taskMutation, close]), ct);
+        Assert.All(repeated.Results, x => { Assert.Equal("applied", x.Status); Assert.True(x.Duplicate); });
+    });
+
+    [Fact]
+    public Task PullRepairsMalformedHistoricalPlanPeriodFromCanonicalPlan() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var id = Guid.NewGuid();
+        var result = await sync.PushAsync(new PushRequest(Guid.NewGuid(), [new MutationDto(Guid.NewGuid(),
+            DevelopmentIdentity.WorkspaceId, "plan", id, "upsert", 0,
+            JsonSerializer.SerializeToElement(new { name = "Week", startsAt = "2026-09-21T00:00:00Z", endsAt = "2026-09-28T00:00:00Z", zoneId = "UTC", archived = false }))]), ct);
+        Assert.Equal("applied", result.Results.Single().Status);
+        var feed = await db.ChangeFeed.SingleAsync(x => x.EntityId == id, ct);
+        feed.PayloadJson = "{\"name\":\"Week\",\"startsAt\":\"bad\",\"endsAt\":null}";
+        await db.SaveChangesAsync(ct);
+
+        var page = await sync.PullAsync(DevelopmentIdentity.WorkspaceId, 0, 100, ct);
+        var plan = Assert.Single(page.Changes, x => x.EntityId == id);
+        Assert.Equal("2026-09-21T00:00:00.0000000+00:00", plan.Payload.GetProperty("startsAt").GetString());
+        Assert.Equal("2026-09-28T00:00:00.0000000+00:00", plan.Payload.GetProperty("endsAt").GetString());
+    });
+
+    [Fact]
+    public Task DeletingArchivedPlanRemovesPlanningChildrenButKeepsFacts() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var workspace = DevelopmentIdentity.WorkspaceId;
+        var treeId = Guid.NewGuid(); var categoryId = Guid.NewGuid(); var planId = Guid.NewGuid();
+        var factId = Guid.NewGuid(); var plannedId = Guid.NewGuid();
+        var client = Guid.NewGuid();
+        async Task<MutationResult> Push(string type, Guid id, string operation, long revision, object payload) =>
+            (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), workspace, type, id,
+                operation, revision, JsonSerializer.SerializeToElement(payload))]), ct)).Results.Single();
+
+        Assert.Equal("applied", (await Push("categoryTree", treeId, "upsert", 0, new { name = "Activity", role = "primary", archived = false })).Status);
+        Assert.Equal("applied", (await Push("category", categoryId, "upsert", 0, new { categoryTreeId = treeId, name = "Work", loadType = "focus", archived = false })).Status);
+        var activePlan = new { name = "Week", startsAt = "2026-09-21T00:00:00Z", endsAt = "2026-09-28T00:00:00Z", zoneId = "UTC", archived = false };
+        Assert.Equal("applied", (await Push("plan", planId, "upsert", 0, activePlan)).Status);
+        Assert.Equal("applied", (await Push("budgetAllocation", Guid.NewGuid(), "upsert", 0, new { planId, categoryId, ownMinutes = 30 })).Status);
+        Assert.Equal("applied", (await Push("plannedEvent", plannedId, "upsert", 0, new { planId, categoryTreeId = treeId, categoryId, occurredAt = "2026-09-22T09:00:00Z" })).Status);
+        Assert.Equal("applied", (await Push("event", factId, "upsert", 0, new { categoryTreeId = treeId, categoryId, occurredAt = "2026-09-22T09:00:00Z", zoneId = "UTC", source = "manual" })).Status);
+        Assert.Equal("applied", (await Push("plan", planId, "upsert", 1, new { activePlan.name, activePlan.startsAt, activePlan.endsAt, activePlan.zoneId, archived = true })).Status);
+        Assert.Equal("applied", (await Push("plan", planId, "delete", 2, new { })).Status);
+
+        Assert.NotNull((await db.Plans.SingleAsync(x => x.Id == planId, ct)).DeletedAt);
+        Assert.All(await db.BudgetAllocations.Where(x => x.PlanId == planId).ToArrayAsync(ct), x => Assert.NotNull(x.DeletedAt));
+        Assert.All(await db.PlannedEvents.Where(x => x.PlanId == planId).ToArrayAsync(ct), x => Assert.NotNull(x.DeletedAt));
+        Assert.Null((await db.Events.SingleAsync(x => x.Id == factId, ct)).DeletedAt);
     });
 
     [Fact]

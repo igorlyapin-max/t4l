@@ -23,6 +23,7 @@ data class ApiMutation(
     val operation: String,
     val baseRevision: Long,
     val payload: JsonObject,
+    val atomicGroupId: String? = null,
 )
 
 @Serializable data class PushBody(val clientId: String, val mutations: List<ApiMutation>)

@@ -45,9 +45,12 @@ public sealed class T4LDbContext(DbContextOptions<T4LDbContext> options) : DbCon
         ConfigureSync<PlannedEventEntity>(modelBuilder);
 
         modelBuilder.Entity<CategoryEntity>().HasIndex(x => new { x.WorkspaceId, x.CategoryTreeId, x.ParentId });
-        modelBuilder.Entity<TimeEventEntity>().HasIndex(x => new { x.WorkspaceId, x.CategoryTreeId, x.OccurredAt });
+        modelBuilder.Entity<TimeEventEntity>().HasIndex(x => new { x.WorkspaceId, x.CategoryTreeId, x.OccurredAt, x.Id });
+        modelBuilder.Entity<TimeEventEntity>().HasIndex(x => new { x.WorkspaceId, x.TaskId, x.OccurredAt, x.Id })
+            .HasFilter("\"DeletedAt\" IS NULL AND \"TaskId\" IS NOT NULL");
         modelBuilder.Entity<TaskEntity>().HasIndex(x => new { x.WorkspaceId, x.CategoryId });
         modelBuilder.Entity<TaskEntity>().HasIndex(x => x.ParentTaskId);
+        modelBuilder.Entity<TaskEntity>().HasIndex(x => new { x.WorkspaceId, x.SortOrder });
         modelBuilder.Entity<TaskCommentEntity>().HasIndex(x => new { x.WorkspaceId, x.TaskId, x.CreatedAt });
         modelBuilder.Entity<PlanEntity>().HasIndex(x => new { x.WorkspaceId, x.StartsAt, x.EndsAt });
         modelBuilder.Entity<BudgetAllocationEntity>().HasIndex(x => new { x.WorkspaceId, x.PlanId, x.CategoryId }).IsUnique();

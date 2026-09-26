@@ -18,6 +18,8 @@ data class CategoryTreeRow(
     val updatedAtEpochMs: Long,
     val deletedAtEpochMs: Long? = null,
     val syncState: LocalSyncState = LocalSyncState.PENDING,
+    val trashedAtEpochMs: Long? = null,
+    val purgedAtEpochMs: Long? = null,
 )
 
 @Entity(tableName = "categories", indices = [Index("workspaceId"), Index("categoryTreeId"), Index("parentId")])
@@ -53,7 +55,7 @@ data class EventRow(
     val syncState: LocalSyncState = LocalSyncState.PENDING,
 )
 
-@Entity(tableName = "tasks", indices = [Index("workspaceId"), Index("categoryId"), Index("parentTaskId")])
+@Entity(tableName = "tasks", indices = [Index("workspaceId"), Index("categoryId"), Index("parentTaskId"), Index(value = ["workspaceId", "sortOrder"])])
 data class TaskRow(
     @PrimaryKey val id: String,
     val workspaceId: String,
@@ -61,7 +63,6 @@ data class TaskRow(
     val categoryId: String?,
     val parentTaskId: String? = null,
     val estimateMinutes: Int,
-    val remainingEstimateMinutes: Int,
     val deadlineEpochMs: Long? = null,
     val nextActionDateEpochDay: Long? = null,
     val nextActionMinuteOfDay: Int? = null,
@@ -71,6 +72,7 @@ data class TaskRow(
     val progress: Int = 0,
     val status: String = "active",
     val splittable: Boolean = true,
+    val sortOrder: Int = 0,
     val revision: Long = 0,
     val updatedAtEpochMs: Long,
     val deletedAtEpochMs: Long? = null,
@@ -95,7 +97,6 @@ data class PlanRow(
     @PrimaryKey val id: String,
     val workspaceId: String,
     val name: String,
-    val kind: String,
     val startsAtEpochMs: Long,
     val endsAtEpochMs: Long,
     val zoneId: String,
@@ -148,6 +149,7 @@ data class OutboxRow(
     val createdAtEpochMs: Long,
     val attemptCount: Int = 0,
     val lastError: String? = null,
+    val atomicGroupId: String? = null,
 )
 
 @Entity(tableName = "sync_cursors")
@@ -165,6 +167,7 @@ data class ConflictRow(
     val createdAtEpochMs: Long,
     val operation: String = "upsert",
     val errorCode: String? = null,
+    val linkedEventId: String? = null,
 )
 
 @Entity(tableName = "user_profiles")
