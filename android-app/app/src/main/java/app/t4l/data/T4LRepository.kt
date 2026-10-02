@@ -31,11 +31,14 @@ data class DashboardState(
     val events: List<EventRow> = emptyList(),
     val trashedCategoryTrees: List<CategoryTreeRow> = emptyList(),
     val historicalCategoryTrees: List<CategoryTreeRow> = emptyList(),
+    val treeAppearances: List<TreeAppearanceRow> = emptyList(),
+    val palettes: List<PaletteRow> = emptyList(),
+    val trashedPalettes: List<PaletteRow> = emptyList(),
 ) {
     fun currentEvent(categoryTreeId: String): EventRow? = events.filter { it.categoryTreeId == categoryTreeId }.maxByOrNull { it.occurredAtEpochMs }
 }
 data class TaskState(val tasks: List<TaskRow> = emptyList(), val comments: List<TaskCommentRow> = emptyList())
-data class PlannerState(val plans: List<PlanRow> = emptyList(), val allocations: List<BudgetAllocationRow> = emptyList(), val plannedEvents: List<PlannedEventRow> = emptyList(), val archivedPlans: List<PlanRow> = emptyList())
+data class PlannerState(val plans: List<PlanRow> = emptyList(), val allocations: List<BudgetAllocationRow> = emptyList(), val plannedEvents: List<PlannedEventRow> = emptyList(), val archivedPlans: List<PlanRow> = emptyList(), val loaded: Boolean = false)
 data class LocalReportRow(val categoryTreeId: String, val categoryId: String?, val seconds: Long)
 data class WorkspaceOption(val id: String, val name: String, val role: String)
 data class SyncUiState(
@@ -61,15 +64,20 @@ class T4LRepository(
     val userId: String get() = identity.userId
 
     val dashboard: Flow<DashboardState> = workspace.flatMapLatest { selected ->
-        combine(dao.observeCategoryTrees(selected), dao.observeCategories(selected), dao.observeEvents(selected), dao.observeTrashedCategoryTrees(selected), dao.observeHistoricalCategoryTrees(selected)) {
+        val core = combine(dao.observeCategoryTrees(selected), dao.observeCategories(selected), dao.observeEvents(selected), dao.observeTrashedCategoryTrees(selected), dao.observeHistoricalCategoryTrees(selected)) {
                 trees, categories, events, trashed, historical -> DashboardState(trees, categories, events, trashed, historical)
+        }
+        combine(core, dao.observeTreeAppearances(selected), dao.observePalettes(selected), dao.observeTrashedPalettes(selected)) { dashboard, appearances, palettes, trashed ->
+            dashboard.copy(treeAppearances = appearances, palettes = palettes, trashedPalettes = trashed)
         }
     }
     val taskState: Flow<TaskState> = workspace.flatMapLatest { selected ->
         combine(dao.observeTasks(selected), dao.observeTaskComments(selected), ::TaskState)
     }
     val plannerState: Flow<PlannerState> = workspace.flatMapLatest { selected ->
-        combine(dao.observePlans(selected), dao.observeBudgetAllocations(selected), dao.observePlannedEvents(selected), dao.observeArchivedPlans(selected), ::PlannerState)
+        combine(dao.observePlans(selected), dao.observeBudgetAllocations(selected), dao.observePlannedEvents(selected), dao.observeArchivedPlans(selected)) { plans, allocations, events, archived ->
+            PlannerState(plans, allocations, events, archived, loaded = true)
+        }
     }
     val syncState: Flow<SyncUiState> = workspace.flatMapLatest { selected ->
         combine(syncStateStore.state, dao.observeOutbox(selected), dao.observeConflicts(selected), ::SyncUiState)
@@ -123,6 +131,76 @@ class T4LRepository(
     suspend fun renameCategoryTree(id: String, name: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
         require(name.isNotBlank() && name.length <= 120); val row = requireNotNull(dao.categoryTree(id)).copy(name = name.trim(), updatedAtEpochMs = now, syncState = LocalSyncState.PENDING)
         dao.putCategoryTree(row); replacePending("categoryTree", id, outboxForCategoryTree(row))
+    }
+
+    suspend fun setTreeColor(treeId: String, colorHex: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
+        require(validHexColor(colorHex))
+        require(dao.categoryTree(treeId)?.let { it.workspaceId == workspaceId && !it.archived && it.deletedAtEpochMs == null } == true)
+        val current = dao.treeAppearance(treeId)
+        val row = TreeAppearanceRow(treeId, workspaceId, treeId, colorHex.uppercase(), current?.revision ?: 0,
+            now, syncState = LocalSyncState.PENDING)
+        dao.putTreeAppearance(row)
+        replacePending("treeAppearance", treeId, outboxForTreeAppearance(row))
+    }
+
+    suspend fun createPalette(name: String, now: Long = System.currentTimeMillis()): String = database.withTransaction {
+        require(name.isNotBlank() && name.length <= 120)
+        val row = PaletteRow(Uuid7.new(now), workspaceId, name.trim(), updatedAtEpochMs = now)
+        dao.putPalette(row); dao.enqueue(outboxForPalette(row)); row.id
+    }
+
+    suspend fun renamePalette(id: String, name: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, _ ->
+        require(name.isNotBlank() && name.length <= 120)
+        row.copy(name = name.trim())
+    }
+
+    suspend fun addPaletteCategory(id: String, categoryId: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        requireActiveCategory(categoryId)
+        require(categoryId !in contents.categoryColors)
+        val changed = contents.copy(categoryColors = contents.categoryColors + (categoryId to null), order = contents.order + "c:$categoryId")
+        row.copy(categoryColorsJson = changed.colorsJson(), itemOrderJson = changed.orderJson())
+    }
+
+    suspend fun removePaletteCategory(id: String, categoryId: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        require(categoryId in contents.categoryColors)
+        val changed = contents.copy(categoryColors = contents.categoryColors - categoryId, order = contents.order - "c:$categoryId")
+        row.copy(categoryColorsJson = changed.colorsJson(), itemOrderJson = changed.orderJson())
+    }
+
+    suspend fun setPaletteCategoryColor(id: String, categoryId: String, colorHex: String?, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        require(categoryId in contents.categoryColors)
+        require(colorHex == null || validHexColor(colorHex))
+        row.copy(categoryColorsJson = contents.copy(categoryColors = contents.categoryColors + (categoryId to colorHex?.uppercase())).colorsJson())
+    }
+
+    suspend fun reorderPalette(id: String, order: List<String>, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        require(order.distinct().size == order.size)
+        require(order.filter { it.startsWith("c:") }.toSet() == contents.categoryColors.keys.map { "c:$it" }.toSet())
+        require(order.all { it.startsWith("c:") || it.startsWith("t:") })
+        row.copy(itemOrderJson = contents.copy(order = order).orderJson())
+    }
+
+    suspend fun archivePalette(id: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, _ ->
+        row.copy(archived = true, trashedAtEpochMs = now)
+    }
+
+    suspend fun restorePalette(id: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now, allowArchived = true) { row, _ ->
+        require(row.archived && row.purgedAtEpochMs == null && row.trashedAtEpochMs?.let { now - it < 30L * 24 * 60 * 60 * 1000 } == true)
+        row.copy(archived = false, trashedAtEpochMs = null)
+    }
+
+    suspend fun purgePalette(id: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
+        val row = requireNotNull(dao.palette(id))
+        require(row.workspaceId == workspaceId && row.archived && row.purgedAtEpochMs == null && row.syncState == LocalSyncState.SYNCED)
+        dao.putPalette(row.copy(purgedAtEpochMs = now, updatedAtEpochMs = now, syncState = LocalSyncState.PENDING))
+        replacePending("palette", id, outbox("palette", id, row.revision, buildJsonObject {}, now, "purge"))
+    }
+
+    private suspend fun updatePalette(id: String, now: Long, allowArchived: Boolean = false, change: suspend (PaletteRow, PaletteContents) -> PaletteRow) = database.withTransaction {
+        val current = requireNotNull(dao.palette(id))
+        require(current.workspaceId == workspaceId && current.deletedAtEpochMs == null && current.purgedAtEpochMs == null && (allowArchived || !current.archived))
+        val row = change(current, PaletteContents.from(current)).copy(updatedAtEpochMs = now, syncState = LocalSyncState.PENDING)
+        dao.putPalette(row); replacePending("palette", id, outboxForPalette(row))
     }
 
     suspend fun archiveCategory(categoryId: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
@@ -335,6 +413,7 @@ class T4LRepository(
         require(name.isNotBlank() && endsAt > startsAt)
         val row = PlanRow(Uuid7.new(now), workspaceId, name.trim(), startsAt, endsAt, ZoneId.systemDefault().id, updatedAtEpochMs = now)
         dao.putPlan(row); dao.enqueue(outboxForPlan(row))
+        row.id
     }
 
     suspend fun archivePlan(id: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
@@ -511,6 +590,10 @@ class T4LRepository(
     private fun outbox(type: String, id: String, revision: Long, payload: JsonObject, now: Long, operation: String = "upsert", groupId: String? = null) =
         OutboxRow(Uuid7.new(now), clientId, workspaceId, type, id, operation, revision, payload.toString(), now, atomicGroupId = groupId)
     private fun outboxForCategoryTree(r: CategoryTreeRow) = outbox("categoryTree", r.id, r.revision, buildJsonObject { put("name", r.name); put("role", r.role); put("sortOrder", r.sortOrder); put("archived", r.archived) }, r.updatedAtEpochMs)
+    private fun outboxForTreeAppearance(r: TreeAppearanceRow) = outbox("treeAppearance", r.id, r.revision, buildJsonObject { put("categoryTreeId", r.categoryTreeId); put("colorHex", r.colorHex) }, r.updatedAtEpochMs)
+    private fun outboxForPalette(r: PaletteRow) = outbox("palette", r.id, r.revision, buildJsonObject {
+        put("name", r.name); put("categoryColorsJson", r.categoryColorsJson); put("itemOrderJson", r.itemOrderJson); put("archived", r.archived)
+    }, r.updatedAtEpochMs)
     private fun outboxForCategory(r: CategoryRow) = outbox("category", r.id, r.revision, buildJsonObject { put("categoryTreeId", r.categoryTreeId); putNullable("parentId", r.parentId); put("name", r.name); put("loadType", r.loadType); put("sortOrder", r.sortOrder); put("archived", r.archived) }, r.updatedAtEpochMs)
     private fun outboxForEvent(r: EventRow, groupId: String? = null) = outbox("event", r.id, r.revision, buildJsonObject { put("categoryTreeId", r.categoryTreeId); putNullable("categoryId", r.categoryId); putNullable("taskId", r.taskId); put("occurredAt", Instant.ofEpochMilli(r.occurredAtEpochMs).toString()); put("zoneId", r.zoneId); put("source", r.source); putNullable("note", r.note) }, r.updatedAtEpochMs, groupId = groupId)
     private fun outboxForTask(r: TaskRow, groupId: String? = null) = outbox("task", r.id, r.revision, buildJsonObject { put("title", r.title); putNullable("categoryId", r.categoryId); putNullable("parentTaskId", r.parentTaskId); put("estimateMinutes", r.estimateMinutes); r.deadlineEpochMs?.let { put("deadline", Instant.ofEpochMilli(it).toString()) }; r.nextActionDateEpochDay?.let { put("nextActionDate", LocalDate.ofEpochDay(it).toString()) }; r.nextActionMinuteOfDay?.let { put("nextActionTime", "%02d:%02d:00".format(it / 60, it % 60)) }; put("zoneId", r.zoneId); put("value", r.value); put("energy", r.energy); put("progress", r.progress); put("status", r.status); put("splittable", r.splittable); put("sortOrder", r.sortOrder) }, r.updatedAtEpochMs, groupId = groupId)

@@ -51,6 +51,8 @@ An active-to-inactive task transition is a sync atomic group: the task upsert an
 
 `Categorization > Deleted` retains archived trees for 30 days from the server-confirmed deletion time. Trees can be restored before expiry or permanently removed from the restorable list after their pending changes sync; the server purges expired entries hourly. Historical tree/category labels remain as read-only reference metadata so factual events and tasks keep their labels; this is an irreversible logical purge, not physical erasure of referenced rows. `Planner > Archived` shows read-only plan details and permits restore or deletion; deleting a plan also removes its budgets and planned events, never factual events. Time distribution reports include only active category trees. Android rejects malformed plan dates from sync rather than writing epoch-zero values, and repairs already-invalid local plan periods from a valid canonical snapshot where available.
 
+`Categorization > Palettes` stores synced flat category selections, per-category display color overrides, and a mixed category/task order. Category-tree border colors use a separate synced `treeAppearance` record; palette colors never change timeline event borders. Deleted palettes share the 30-day restore/purge policy. `Planner` remembers one active plan per workspace and shows only its details; opening the plan picker clears that selection. Tracking and Planner share device-local tree visibility and tree-name settings, while panel height is remembered separately. A shared palette selection has an optional per-plan override; palette dates stay local to tracking or the current plan. Hidden trees remain available for palette quick entry and produce a warning after successful event creation.
+
 Restoring a tree does not alter the archived state of its categories. Trees archived by older clients may have every category archived; the tree editor then offers a confirmed `Restore hidden categories` action. Original individual archive choices cannot be reconstructed from old data, so this action deliberately restores all hidden categories only when the user requests it.
 
 Settings are split into `Network`, `Backup`, `Security`, `Diagnostics`, and `Language`. Language is an app-local English/Russian choice; before the first explicit choice Android follows the system locale.
@@ -75,7 +77,7 @@ Release builds accept HTTPS only. Debug builds additionally accept literal loopb
 
 - Server schema v1 is intentionally unsupported. If startup reports `legacy_schema_not_supported`, recreate the development database instead of applying a lossy conversion.
 - Android database v1 is reset destructively. Database v2 migrates to v3 while preserving current entities and sync conflicts; v3 migrates to v4 with the user profile cache and offline profile/avatar queues; v4 migrates to v5 with profile base snapshots and explicit personal conflicts.
-- Backup import accepts only `formatVersion: 3` and validates the complete graph before a single transactional import.
+- Backup import accepts only `formatVersion: 4` and validates the complete graph before a single transactional import.
 
 ## Product model
 
@@ -84,7 +86,7 @@ Release builds accept HTTPS only. Debug builds additionally accept literal loopb
 - A `Task` is independent from categories, belongs to either a category or a parent task, and supports active, paused, completed, and cancelled states plus append-only comments.
 - A `Plan` covers an arbitrary `[startsAt, endsAt)` period and contains independent budget allocations and timeline events; either part can be empty. Plans may overlap. Own and descendant-inclusive timeline durations are calculated independently for each category tree in milliseconds; budget totals are separate user-entered values.
 - Task time is the sum of factual intervals directly tagged with that task, without subtasks. Android appends a taskless event in the same category tree when pausing, completing, or cancelling a currently tracked task; other sync clients must do the same in the same logical operation. The task-time projection reports signed `spentMillis - estimateMinutes * 60000`.
-- Backup export/import uses `formatVersion: 3`; earlier backup formats and legacy Timeline/DailyPlan API contracts are intentionally unsupported. Deploy server and Android together because the sync contract removed `Plan.kind` and `Task.remainingEstimateMinutes`.
+- Backup export/import uses `formatVersion: 4`; v3 and earlier backup formats are intentionally unsupported. Deploy server and Android together because the sync contract now includes `palette` and `treeAppearance`.
 
 ## Current MVP boundaries
 

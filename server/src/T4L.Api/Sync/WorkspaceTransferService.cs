@@ -18,8 +18,11 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
     {
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 120)
             throw new ArgumentException("Workspace name must contain between 1 and 120 characters.");
-        if (!request.Snapshot.TryGetProperty("formatVersion", out var version) || version.GetInt32() != 3)
-            throw new ArgumentException("Unsupported backup formatVersion. Only formatVersion 3 is accepted.");
+        if (request.Snapshot.ValueKind != JsonValueKind.Object || !request.Snapshot.TryGetProperty("formatVersion", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var formatVersion) || formatVersion != 4)
+            throw new ArgumentException("Unsupported backup formatVersion. Only formatVersion 4 is accepted.");
+        foreach (var collection in new[] { "categoryTrees", "categories", "events", "tasks", "taskComments", "plans", "budgetAllocations", "plannedEvents", "treeAppearances", "palettes" })
+            if (!request.Snapshot.TryGetProperty(collection, out var value) || value.ValueKind != JsonValueKind.Array)
+                throw new ArgumentException($"Backup is missing array {collection}.");
 
         var trees = Read<CategoryTreeEntity>(request.Snapshot, "categoryTrees");
         var categories = Read<CategoryEntity>(request.Snapshot, "categories");
@@ -29,7 +32,9 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         var plans = Read<PlanEntity>(request.Snapshot, "plans");
         var allocations = Read<BudgetAllocationEntity>(request.Snapshot, "budgetAllocations");
         var plannedEvents = Read<PlannedEventEntity>(request.Snapshot, "plannedEvents");
-        ValidateSnapshot(trees, categories, events, tasks, comments, plans, allocations, plannedEvents);
+        var appearances = Read<TreeAppearanceEntity>(request.Snapshot, "treeAppearances");
+        var palettes = Read<PaletteEntity>(request.Snapshot, "palettes");
+        ValidateSnapshot(trees, categories, events, tasks, comments, plans, allocations, plannedEvents, appearances, palettes);
 
         var actor = await currentActor.GetAsync(cancellationToken);
         var workspaceId = Guid.CreateVersion7();
@@ -93,6 +98,31 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
             entity.TaskId = entity.TaskId is { } task ? Required(taskIds, task, "plannedEvent.taskId") : null;
             Reset(entity, workspaceId, now);
         }
+        foreach (var entity in appearances)
+        {
+            entity.CategoryTreeId = Required(treeIds, entity.CategoryTreeId, "treeAppearance.categoryTreeId");
+            entity.Id = entity.CategoryTreeId;
+            Reset(entity, workspaceId, now);
+        }
+        foreach (var entity in palettes)
+        {
+            entity.Id = Guid.CreateVersion7();
+            using var colors = JsonDocument.Parse(entity.CategoryColorsJson);
+            entity.CategoryColorsJson = JsonSerializer.Serialize(colors.RootElement.EnumerateObject().ToDictionary(
+                x => Required(categoryIds, Guid.Parse(x.Name), "palette.categoryId").ToString("D"),
+                x => x.Value.ValueKind == JsonValueKind.Null ? null : x.Value.GetString()));
+            using var order = JsonDocument.Parse(entity.ItemOrderJson);
+            entity.ItemOrderJson = JsonSerializer.Serialize(order.RootElement.EnumerateArray().Select(x => {
+                var key = x.GetString()!;
+                if (key.StartsWith("t:", StringComparison.Ordinal))
+                    return taskIds.TryGetValue(Guid.Parse(key[2..]), out var taskId) ? "t:" + taskId.ToString("D") : null;
+                var categoryId = Required(categoryIds, Guid.Parse(key[2..]), "palette.order.category");
+                return "c:" + categoryId.ToString("D");
+            }).Where(x => x is not null).ToArray());
+            entity.TrashedAt = entity.Archived ? now : null;
+            entity.PurgedAt = entity.PurgedAt is null ? null : now;
+            Reset(entity, workspaceId, now);
+        }
 
         await using var transaction = await db.Database.BeginTransactionAsync(cancellationToken);
         db.Workspaces.Add(new WorkspaceEntity { Id = workspaceId, Name = request.Name.Trim(), CreatedAt = now });
@@ -100,11 +130,13 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         db.CategoryTrees.AddRange(trees); db.Categories.AddRange(categories); db.Events.AddRange(events);
         db.Tasks.AddRange(tasks); db.TaskComments.AddRange(comments); db.Plans.AddRange(plans);
         db.BudgetAllocations.AddRange(allocations); db.PlannedEvents.AddRange(plannedEvents);
+        db.TreeAppearances.AddRange(appearances); db.Palettes.AddRange(palettes);
         AddChanges("categoryTree", trees, now); AddChanges("category", categories, now); AddChanges("event", events, now);
         AddChanges("task", tasks, now); AddChanges("taskComment", comments, now); AddChanges("plan", plans, now);
         AddChanges("budgetAllocation", allocations, now); AddChanges("plannedEvent", plannedEvents, now);
+        AddChanges("treeAppearance", appearances, now); AddChanges("palette", palettes, now);
         await db.SaveChangesAsync(cancellationToken); await transaction.CommitAsync(cancellationToken);
-        return new WorkspaceImportResult(workspaceId, trees.Count + categories.Count + events.Count + tasks.Count + comments.Count + plans.Count + allocations.Count + plannedEvents.Count);
+        return new WorkspaceImportResult(workspaceId, trees.Count + categories.Count + events.Count + tasks.Count + comments.Count + plans.Count + allocations.Count + plannedEvents.Count + appearances.Count + palettes.Count);
     }
 
     private void AddChanges<TEntity>(string type, IEnumerable<TEntity> entities, DateTimeOffset now) where TEntity : SyncEntity =>
@@ -114,8 +146,16 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         }));
     private static Dictionary<Guid, Guid> Remap<TEntity>(IEnumerable<TEntity> entities) where TEntity : SyncEntity =>
         entities.ToDictionary(x => x.Id, _ => Guid.CreateVersion7());
-    private static List<TEntity> Read<TEntity>(JsonElement root, string name) =>
-        root.TryGetProperty(name, out var element) ? element.Deserialize<List<TEntity>>(JsonOptions) ?? [] : [];
+    private static List<TEntity> Read<TEntity>(JsonElement root, string name)
+    {
+        try
+        {
+            var items = root.TryGetProperty(name, out var element) ? element.Deserialize<List<TEntity>>(JsonOptions) ?? [] : [];
+            if (items.Any(x => x is null)) throw new ArgumentException($"Invalid backup collection: {name}.");
+            return items;
+        }
+        catch (JsonException exception) { throw new ArgumentException($"Invalid backup collection: {name}.", exception); }
+    }
     private static Guid Required(Dictionary<Guid, Guid> map, Guid oldId, string field) =>
         map.TryGetValue(oldId, out var value) ? value : throw new ArgumentException($"Broken backup reference: {field}.");
 
@@ -127,9 +167,11 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         List<TaskCommentEntity> comments,
         List<PlanEntity> plans,
         List<BudgetAllocationEntity> allocations,
-        List<PlannedEventEntity> plannedEvents)
+        List<PlannedEventEntity> plannedEvents,
+        List<TreeAppearanceEntity> appearances,
+        List<PaletteEntity> palettes)
     {
-        var total = trees.Count + categories.Count + events.Count + tasks.Count + comments.Count + plans.Count + allocations.Count + plannedEvents.Count;
+        var total = trees.Count + categories.Count + events.Count + tasks.Count + comments.Count + plans.Count + allocations.Count + plannedEvents.Count + appearances.Count + palettes.Count;
         if (total > 100_000) throw new ArgumentException("Backup contains too many entities.");
         var treeIds = trees.Select(x => x.Id).ToHashSet();
         var categoryById = categories.ToDictionary(x => x.Id);
@@ -151,6 +193,14 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         if (allocations.Any(x => x.OwnMinutes < 0 || !planById.ContainsKey(x.PlanId) || !categoryById.ContainsKey(x.CategoryId))) throw new ArgumentException("Invalid budget allocation.");
         if (allocations.GroupBy(x => (x.PlanId, x.CategoryId)).Any(x => x.Count() > 1)) throw new ArgumentException("Duplicate budget allocation.");
         if (plannedEvents.Any(x => !planById.TryGetValue(x.PlanId, out var plan) || x.OccurredAt < plan.StartsAt || x.OccurredAt >= plan.EndsAt || !treeIds.Contains(x.CategoryTreeId) || x.CategoryId is { } id && !categoryById.ContainsKey(id) || x.TaskId is { } taskId && !taskById.ContainsKey(taskId))) throw new ArgumentException("Invalid planned event.");
+        if (appearances.Any(x => x.Id != x.CategoryTreeId || !treeIds.Contains(x.CategoryTreeId) || !System.Text.RegularExpressions.Regex.IsMatch(x.ColorHex, "^#[0-9A-Fa-f]{6}$")) ||
+            appearances.Select(x => x.CategoryTreeId).Distinct().Count() != appearances.Count) throw new ArgumentException("Invalid tree appearance.");
+        foreach (var palette in palettes)
+        {
+            var contents = PaletteValidation.Parse(palette);
+            if (!contents.CategoryIds.IsSubsetOf(categoryById.Keys)) throw new ArgumentException("Broken palette category reference.");
+            // Task keys may outlive deleted tasks; import intentionally removes those keys during remapping.
+        }
     }
 
     private static void AssertAcyclic(IEnumerable<Guid> ids, Func<Guid, Guid?> parent, string message)

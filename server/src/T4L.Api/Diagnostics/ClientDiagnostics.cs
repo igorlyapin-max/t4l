@@ -18,21 +18,34 @@ public sealed partial class ClientDiagnosticSink(ILogger<ClientDiagnosticSink> l
     [
         "application_started", "diagnostic_level_changed", "sync_started", "sync_succeeded", "sync_retry",
         "ui_action_failed", "backup_export_succeeded", "backup_export_failed", "backup_import_succeeded",
-        "backup_import_failed", "sync_conflict_resolution_queued", "pomodoro_notification_denied", "profile_actor_rebound"
+        "backup_import_failed", "sync_conflict_resolution_queued", "pomodoro_notification_denied", "pomodoro_settings_saved", "profile_actor_rebound"
     ];
+    internal static IReadOnlySet<string> EventNames => AllowedEventNames;
     private static readonly HashSet<string> AllowedAttributes =
         ["durationMs", "outcome", "errorType", "pendingCount", "conflictCount", "level", "phase", "operation", "status"];
 
+    public void ValidateBatch(IReadOnlyList<ClientDiagnosticEvent> events)
+    {
+        if (events is null || events.Count is < 1 or > 100) throw new ArgumentException("invalid_diagnostic_batch");
+        foreach (var item in events) _ = Validate(item);
+    }
+
     public void Write(ClientDiagnosticEvent item)
     {
+        var safeAttributes = Validate(item);
+        LogClientEvent(logger, item.EventName, item.Level, item.ClientId, item.AppVersion, safeAttributes);
+    }
+
+    private static Dictionary<string, string> Validate(ClientDiagnosticEvent item)
+    {
+        if (item is null) throw new ArgumentException("invalid_diagnostic_event");
         if (!AllowedEventNames.Contains(item.EventName) || item.Level is not ("basic" or "verbose") ||
             string.IsNullOrWhiteSpace(item.AppVersion) || item.AppVersion.Length > 40 ||
             item.AppVersion.Any(char.IsControl) ||
             item.Attributes?.Keys.Any(key => !AllowedAttributes.Contains(key)) == true)
             throw new ArgumentException("invalid_diagnostic_event");
-        var safeAttributes = item.Attributes?.Where(x => AllowedAttributes.Contains(x.Key))
+        return item.Attributes?.Where(x => AllowedAttributes.Contains(x.Key))
             .ToDictionary(x => x.Key, x => ValidateValue(x.Key, x.Value)) ?? [];
-        LogClientEvent(logger, item.EventName, item.Level, item.ClientId, item.AppVersion, safeAttributes);
     }
 
     private static string ValidateValue(string key, string? value)

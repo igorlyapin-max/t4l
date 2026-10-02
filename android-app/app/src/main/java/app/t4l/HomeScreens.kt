@@ -140,9 +140,8 @@ fun HeaderLifeCountdown(profile: UserProfileRow?, onClick: () -> Unit, modifier:
 }
 
 @Composable
-fun HomeScreen(pomodoro: PomodoroState, padding: PaddingValues) {
+fun TomatoTimerScreen(pomodoro: PomodoroState, padding: PaddingValues, headingLabel: Int) {
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        item { ScreenHeading(R.string.home) }
         item {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
                 PomodoroCard(pomodoro, Modifier.fillMaxWidth().widthIn(max = 560.dp))
@@ -222,7 +221,7 @@ fun PomodoroSettingsScreen(state: PomodoroState, vm: MainViewModel, padding: Pad
         parsedLong != null && parsedLong in 1..120
     val configurationDirty = parsedWork != state.workMinutes || parsedShort != state.shortBreakMinutes || parsedLong != state.longBreakMinutes || mode != state.mode
     Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text(stringResource(R.string.pomodoro_timer), style = MaterialTheme.typography.titleLarge)
+        Text(stringResource(R.string.tomato_timer_settings), style = MaterialTheme.typography.titleLarge)
         PomodoroModeMenu(mode) { mode = it }
         BoxWithConstraints(Modifier.fillMaxWidth()) {
             if (maxWidth >= 420.dp) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

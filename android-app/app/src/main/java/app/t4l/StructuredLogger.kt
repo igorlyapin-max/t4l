@@ -31,13 +31,16 @@ class StructuredLogger(private val context: Context) {
         val activeLevel = level
         if (activeLevel == DiagnosticLevel.OFF || minimumLevel == DiagnosticLevel.VERBOSE && activeLevel != DiagnosticLevel.VERBOSE) return
         if (name !in EVENT_NAMES || fields.keys.any { it !in VERBOSE_FIELDS }) {
-            Log.w("T4L", "diagnostic_event_rejected")
+            val rejected = Json.encodeToString(PendingDiagnosticEvent(Instant.now().toString(), "warning", "diagnostic_event_rejected", emptyMap()))
+            Log.w("T4L", rejected)
+            System.err.println(rejected)
             return
         }
         val allowed = if (minimumLevel == DiagnosticLevel.VERBOSE) VERBOSE_FIELDS else BASIC_FIELDS
         val safeFields = fields.filterKeys(allowed::contains).mapValues { (key, value) -> redact(key, value) }
         val line = Json.encodeToString(PendingDiagnosticEvent(Instant.now().toString(), minimumLevel.name.lowercase(), name.take(80), safeFields))
         Log.i("T4L", line)
+        System.out.println(line)
         writeRotatingFile(line)
         DiagnosticUploadScheduler.schedule(context)
     }
@@ -54,7 +57,7 @@ class StructuredLogger(private val context: Context) {
         else -> "[redacted]"
     }
 
-    private fun writeRotatingFile(line: String) {
+    @Synchronized private fun writeRotatingFile(line: String) {
         val directory = File(context.filesDir, "diagnostics").apply { mkdirs() }
         val file = File(directory, "t4l.ndjson")
         if (file.exists() && file.length() > MAX_BYTES) {
@@ -68,14 +71,29 @@ class StructuredLogger(private val context: Context) {
     @Synchronized fun pending(limit: Int = 100): List<PendingDiagnosticEvent> {
         val file = File(context.filesDir, "diagnostics/t4l.ndjson")
         if (!file.exists()) return emptyList()
-        return file.useLines { lines -> lines.take(limit).mapNotNull { runCatching { Json.decodeFromString<PendingDiagnosticEvent>(it) }.getOrNull() }.toList() }
+        val lines = file.readLines()
+        val valid = lines.mapNotNull { line ->
+            runCatching { Json.decodeFromString<PendingDiagnosticEvent>(line) }.getOrNull()?.let { line to it }
+        }
+        if (valid.size != lines.size) file.writeText(valid.joinToString("\n", postfix = if (valid.isEmpty()) "" else "\n") { it.first })
+        return valid.take(limit).map { it.second }
     }
 
-    @Synchronized fun acknowledge(count: Int) {
-        if (count <= 0) return
+    fun recordRejectedUpload(event: PendingDiagnosticEvent) {
+        val safeLine = Json.encodeToString(PendingDiagnosticEvent(Instant.now().toString(), "warning", "diagnostic_upload_rejected",
+            mapOf("operation" to event.eventName.take(80).filter { it.isLetterOrDigit() || it in "_-." })))
+        Log.w("T4L", safeLine)
+        System.err.println(safeLine)
+    }
+
+    @Synchronized fun acknowledge(events: List<PendingDiagnosticEvent>) {
+        if (events.isEmpty()) return
         val file = File(context.filesDir, "diagnostics/t4l.ndjson")
         if (!file.exists()) return
-        val remaining = file.readLines().drop(count)
+        val lines = file.readLines()
+        val prefix = lines.take(events.size).mapNotNull { runCatching { Json.decodeFromString<PendingDiagnosticEvent>(it) }.getOrNull() }
+        if (prefix != events) return
+        val remaining = lines.drop(events.size)
         file.writeText(remaining.joinToString(separator = "\n", postfix = if (remaining.isEmpty()) "" else "\n"))
     }
 

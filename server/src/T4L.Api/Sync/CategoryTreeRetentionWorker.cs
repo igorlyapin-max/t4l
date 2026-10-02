@@ -26,7 +26,7 @@ public sealed partial class CategoryTreeRetentionWorker(
         }
     }
 
-    private async Task PurgeExpiredAsync(CancellationToken cancellationToken)
+    internal async Task PurgeExpiredAsync(CancellationToken cancellationToken)
     {
         using var scope = scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<T4LDbContext>();
@@ -52,11 +52,32 @@ public sealed partial class CategoryTreeRetentionWorker(
                 CreatedAt = now
             });
         }
-        if (expired.Length == 0) return;
+        var expiredPalettes = await db.Palettes
+            .Where(x => x.Archived && x.DeletedAt == null && x.PurgedAt == null && x.TrashedAt != null && x.TrashedAt <= now.AddDays(-30))
+            .OrderBy(x => x.TrashedAt)
+            .Take(100)
+            .ToArrayAsync(cancellationToken);
+        foreach (var palette in expiredPalettes)
+        {
+            palette.PurgedAt = now;
+            palette.Revision++;
+            palette.UpdatedAt = now;
+            db.ChangeFeed.Add(new ChangeFeedEntry
+            {
+                WorkspaceId = palette.WorkspaceId,
+                EntityType = "palette",
+                EntityId = palette.Id,
+                Revision = palette.Revision,
+                Deleted = false,
+                PayloadJson = JsonSerializer.Serialize(palette, JsonOptions),
+                CreatedAt = now
+            });
+        }
+        if (expired.Length == 0 && expiredPalettes.Length == 0) return;
         try
         {
             await db.SaveChangesAsync(cancellationToken);
-            LogPurged(logger, expired.Length);
+            LogPurged(logger, expired.Length + expiredPalettes.Length);
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -74,7 +95,7 @@ public sealed partial class CategoryTreeRetentionWorker(
     [LoggerMessage(EventId = 2101, Level = LogLevel.Error, Message = "Category tree retention cleanup failed")]
     private static partial void LogCleanupFailed(ILogger logger, Exception exception);
 
-    [LoggerMessage(EventId = 2102, Level = LogLevel.Information, Message = "Purged {Count} expired category trees")]
+    [LoggerMessage(EventId = 2102, Level = LogLevel.Information, Message = "Purged {Count} expired category trees or palettes")]
     private static partial void LogPurged(ILogger logger, int count);
 
     [LoggerMessage(EventId = 2103, Level = LogLevel.Information, Message = "Category tree retention cleanup will retry after a concurrent update")]

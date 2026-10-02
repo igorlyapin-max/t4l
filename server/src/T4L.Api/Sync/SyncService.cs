@@ -107,6 +107,8 @@ public sealed partial class SyncService(
         return mutation.EntityType.ToLowerInvariant() switch
         {
             "categorytree" => await ApplyEntityAsync<CategoryTreeEntity>(mutation, cancellationToken),
+            "treeappearance" => await ApplyEntityAsync<TreeAppearanceEntity>(mutation, cancellationToken),
+            "palette" => await ApplyEntityAsync<PaletteEntity>(mutation, cancellationToken),
             "category" => await ApplyEntityAsync<CategoryEntity>(mutation, cancellationToken),
             "event" => await ApplyEntityAsync<TimeEventEntity>(mutation, cancellationToken),
             "task" => await ApplyEntityAsync<TaskEntity>(mutation, cancellationToken),
@@ -125,6 +127,41 @@ public sealed partial class SyncService(
         {
             switch (mutation.EntityType.ToLowerInvariant())
             {
+                case "treeappearance":
+                {
+                    var item = RequiredPayload<TreeAppearanceEntity>(mutation);
+                    if (item.CategoryTreeId != mutation.EntityId || !System.Text.RegularExpressions.Regex.IsMatch(item.ColorHex, "^#[0-9A-Fa-f]{6}$")) return "invalid_tree_appearance";
+                    if (!await db.CategoryTrees.AnyAsync(x => x.Id == item.CategoryTreeId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && !x.Archived && x.PurgedAt == null, cancellationToken)) return "category_tree_not_found";
+                    break;
+                }
+                case "palette":
+                {
+                    var item = RequiredPayload<PaletteEntity>(mutation);
+                    PaletteContents contents;
+                    try { contents = PaletteValidation.Parse(item); }
+                    catch (ArgumentException exception) { return exception.Message; }
+                    var previous = await db.Palettes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == mutation.EntityId && x.WorkspaceId == mutation.WorkspaceId, cancellationToken);
+                    var previousIds = new HashSet<Guid>();
+                    if (previous is not null)
+                    {
+                        try { previousIds = PaletteValidation.Parse(previous).CategoryIds; }
+                        catch (ArgumentException) { return "invalid_palette"; }
+                    }
+                    var categoryIds = contents.CategoryIds.ToArray();
+                    var existingCategories = await db.Categories.AsNoTracking()
+                        .Where(x => categoryIds.Contains(x.Id) && x.WorkspaceId == mutation.WorkspaceId)
+                        .Where(x => (previousIds.Contains(x.Id) || x.DeletedAt == null && !x.Archived) &&
+                            db.CategoryTrees.Any(tree => tree.Id == x.CategoryTreeId && tree.WorkspaceId == mutation.WorkspaceId &&
+                                (previousIds.Contains(x.Id) || tree.DeletedAt == null && !tree.Archived && tree.PurgedAt == null)))
+                        .Select(x => x.Id).ToArrayAsync(cancellationToken);
+                    if (existingCategories.Length != categoryIds.Length) return "palette_category_not_found";
+                    var taskIds = contents.TaskIds.ToArray();
+                    var existingTaskIds = await db.Tasks.AsNoTracking()
+                        .Where(x => taskIds.Contains(x.Id) && x.WorkspaceId == mutation.WorkspaceId)
+                        .Select(x => x.Id).ToArrayAsync(cancellationToken);
+                    if (existingTaskIds.Length != taskIds.Length) return "palette_task_not_found";
+                    break;
+                }
                 case "category":
                 {
                     var item = RequiredPayload<CategoryEntity>(mutation);
@@ -393,6 +430,8 @@ public sealed partial class SyncService(
         entityType.ToLowerInvariant() switch
         {
             "categorytree" => await db.CategoryTrees.AsNoTracking().SingleOrDefaultAsync(x => x.Id == entityId && x.WorkspaceId == workspaceId, cancellationToken),
+            "treeappearance" => await db.TreeAppearances.AsNoTracking().SingleOrDefaultAsync(x => x.Id == entityId && x.WorkspaceId == workspaceId, cancellationToken),
+            "palette" => await db.Palettes.AsNoTracking().SingleOrDefaultAsync(x => x.Id == entityId && x.WorkspaceId == workspaceId, cancellationToken),
             "category" => await db.Categories.AsNoTracking().SingleOrDefaultAsync(x => x.Id == entityId && x.WorkspaceId == workspaceId, cancellationToken),
             "event" => await db.Events.AsNoTracking().SingleOrDefaultAsync(x => x.Id == entityId && x.WorkspaceId == workspaceId, cancellationToken),
             "task" => await db.Tasks.AsNoTracking().SingleOrDefaultAsync(x => x.Id == entityId && x.WorkspaceId == workspaceId, cancellationToken),
@@ -460,6 +499,12 @@ public sealed partial class SyncService(
                 return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "category_tree_not_in_trash");
             purgeTree.PurgedAt = now;
         }
+        else if (mutation.Operation.Equals("purge", StringComparison.OrdinalIgnoreCase) && entity is PaletteEntity purgePalette)
+        {
+            if (existing is null || !purgePalette.Archived || purgePalette.PurgedAt is not null)
+                return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "palette_not_in_trash");
+            purgePalette.PurgedAt = now;
+        }
         else if (mutation.Operation.Equals("delete", StringComparison.OrdinalIgnoreCase))
         {
             if (existing is null)
@@ -479,6 +524,10 @@ public sealed partial class SyncService(
             var wasArchived = priorTree?.Archived == true;
             var previousTrashedAt = priorTree?.TrashedAt;
             var previousPurgedAt = priorTree?.PurgedAt;
+            var priorPalette = existing as PaletteEntity;
+            var paletteWasArchived = priorPalette?.Archived == true;
+            var previousPaletteTrashedAt = priorPalette?.TrashedAt;
+            var previousPalettePurgedAt = priorPalette?.PurgedAt;
             if (incoming is CategoryTreeEntity incomingTree)
             {
                 if (previousPurgedAt is not null)
@@ -486,11 +535,23 @@ public sealed partial class SyncService(
                 if (wasArchived && !incomingTree.Archived && previousTrashedAt is { } trashedAt && now >= trashedAt.AddDays(30))
                     return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "category_tree_retention_expired");
             }
+            if (incoming is PaletteEntity incomingPalette)
+            {
+                if (previousPalettePurgedAt is not null)
+                    return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "palette_purged");
+                if (paletteWasArchived && !incomingPalette.Archived && previousPaletteTrashedAt is { } trashedAt && now >= trashedAt.AddDays(30))
+                    return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "palette_retention_expired");
+            }
             CopyMutableProperties(incoming, entity);
             if (entity is CategoryTreeEntity tree)
             {
                 tree.TrashedAt = tree.Archived ? previousTrashedAt ?? now : null;
                 tree.PurgedAt = null;
+            }
+            if (entity is PaletteEntity palette)
+            {
+                palette.TrashedAt = palette.Archived ? previousPaletteTrashedAt ?? now : null;
+                palette.PurgedAt = null;
             }
             entity.DeletedAt = null;
             if (existing is null) set.Add(entity);

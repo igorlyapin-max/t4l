@@ -161,6 +161,40 @@ namespace T4L.Api.Persistence.Migrations
                     b.ToTable("CategoryTrees");
                 });
 
+            modelBuilder.Entity("T4L.Api.Domain.TreeAppearanceEntity", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<Guid>("CategoryTreeId").HasColumnType("uuid");
+                    b.Property<string>("ColorHex").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("DeletedAt").HasColumnType("timestamp with time zone");
+                    b.Property<long>("Revision").IsConcurrencyToken().HasColumnType("bigint");
+                    b.Property<DateTimeOffset>("UpdatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<Guid>("WorkspaceId").HasColumnType("uuid");
+                    b.HasKey("Id");
+                    b.HasIndex("WorkspaceId", "UpdatedAt");
+                    b.ToTable("TreeAppearances");
+                });
+
+            modelBuilder.Entity("T4L.Api.Domain.PaletteEntity", b =>
+                {
+                    b.Property<Guid>("Id").ValueGeneratedOnAdd().HasColumnType("uuid");
+                    b.Property<bool>("Archived").HasColumnType("boolean");
+                    b.Property<string>("CategoryColorsJson").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset?>("DeletedAt").HasColumnType("timestamp with time zone");
+                    b.Property<string>("ItemOrderJson").IsRequired().HasColumnType("text");
+                    b.Property<string>("Name").IsRequired().HasColumnType("text");
+                    b.Property<DateTimeOffset?>("PurgedAt").HasColumnType("timestamp with time zone");
+                    b.Property<long>("Revision").IsConcurrencyToken().HasColumnType("bigint");
+                    b.Property<DateTimeOffset?>("TrashedAt").HasColumnType("timestamp with time zone");
+                    b.Property<DateTimeOffset>("UpdatedAt").HasColumnType("timestamp with time zone");
+                    b.Property<Guid>("WorkspaceId").HasColumnType("uuid");
+                    b.HasKey("Id");
+                    b.HasIndex("WorkspaceId", "UpdatedAt");
+                    b.ToTable("Palettes");
+                });
+
             modelBuilder.Entity("T4L.Api.Domain.ChangeFeedEntry", b =>
                 {
                     b.Property<long>("Sequence")

@@ -75,6 +75,22 @@ public sealed class CategoryTreeEntity : SyncEntity
     public DateTimeOffset? PurgedAt { get; set; }
 }
 
+public sealed class TreeAppearanceEntity : SyncEntity
+{
+    public Guid CategoryTreeId { get; set; }
+    public string ColorHex { get; set; } = "#808080";
+}
+
+public sealed class PaletteEntity : SyncEntity
+{
+    public string Name { get; set; } = "";
+    public string CategoryColorsJson { get; set; } = "{}";
+    public string ItemOrderJson { get; set; } = "[]";
+    public bool Archived { get; set; }
+    public DateTimeOffset? TrashedAt { get; set; }
+    public DateTimeOffset? PurgedAt { get; set; }
+}
+
 public sealed class CategoryEntity : SyncEntity
 {
     public Guid CategoryTreeId { get; set; }

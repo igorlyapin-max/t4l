@@ -8,14 +8,14 @@ import org.junit.Test
 class BackupCryptoTest {
     @Test
     fun encryptedBackupRoundTrips() {
-        val encrypted = BackupCrypto.encrypt("{\"formatVersion\":3}", "correct horse".toCharArray())
+        val encrypted = BackupCrypto.encrypt("{\"formatVersion\":4}", "correct horse".toCharArray())
         assertTrue(BackupCrypto.isEncrypted(encrypted))
-        assertEquals("{\"formatVersion\":3}", BackupCrypto.decrypt(encrypted, "correct horse".toCharArray()))
+        assertEquals("{\"formatVersion\":4}", BackupCrypto.decrypt(encrypted, "correct horse".toCharArray()))
     }
 
     @Test
     fun passwordIsClearedWhenDecryptionFails() {
-        val encrypted = BackupCrypto.encrypt("{\"formatVersion\":3}", "correct".toCharArray())
+        val encrypted = BackupCrypto.encrypt("{\"formatVersion\":4}", "correct".toCharArray())
         val wrong = "incorrect".toCharArray()
         try {
             BackupCrypto.decrypt(encrypted, wrong)

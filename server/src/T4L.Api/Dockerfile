@@ -1,9 +1,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0-noble AS build
 WORKDIR /src
 COPY ["Directory.Build.props", "."]
-COPY ["VERSION", "."]
 COPY ["server/src/T4L.Api/T4L.Api.csproj", "server/src/T4L.Api/"]
 RUN dotnet restore "server/src/T4L.Api/T4L.Api.csproj"
+COPY ["VERSION", "."]
 COPY [".editorconfig", "."]
 COPY server/src/T4L.Api server/src/T4L.Api
 RUN dotnet publish "server/src/T4L.Api/T4L.Api.csproj" -c Release -o /app /p:UseAppHost=false

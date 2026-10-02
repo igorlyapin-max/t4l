@@ -16,12 +16,12 @@ class DatabaseConverters {
 
 @Database(
     entities = [
-        CategoryTreeRow::class, CategoryRow::class, EventRow::class, TaskRow::class,
+        CategoryTreeRow::class, TreeAppearanceRow::class, PaletteRow::class, CategoryRow::class, EventRow::class, TaskRow::class,
         TaskCommentRow::class, PlanRow::class, BudgetAllocationRow::class, PlannedEventRow::class,
         OutboxRow::class, SyncCursorRow::class, ConflictRow::class,
         UserProfileRow::class, ProfileMutationRow::class, AvatarMutationRow::class, PersonalConflictRow::class,
     ],
-    version = 9,
+    version = 10,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -33,7 +33,16 @@ abstract class T4LDatabase : RoomDatabase() {
             context.applicationContext,
             T4LDatabase::class.java,
             "t4l.db",
-        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9).fallbackToDestructiveMigrationFrom(true, 1).build()
+        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).fallbackToDestructiveMigrationFrom(true, 1).build()
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS tree_appearances (id TEXT NOT NULL PRIMARY KEY, workspaceId TEXT NOT NULL, categoryTreeId TEXT NOT NULL, colorHex TEXT NOT NULL, revision INTEGER NOT NULL, updatedAtEpochMs INTEGER NOT NULL, deletedAtEpochMs INTEGER, syncState TEXT NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_tree_appearances_workspaceId ON tree_appearances(workspaceId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS palettes (id TEXT NOT NULL PRIMARY KEY, workspaceId TEXT NOT NULL, name TEXT NOT NULL, categoryColorsJson TEXT NOT NULL, itemOrderJson TEXT NOT NULL, archived INTEGER NOT NULL, trashedAtEpochMs INTEGER, purgedAtEpochMs INTEGER, revision INTEGER NOT NULL, updatedAtEpochMs INTEGER NOT NULL, deletedAtEpochMs INTEGER, syncState TEXT NOT NULL)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_palettes_workspaceId ON palettes(workspaceId)")
+            }
+        }
 
         val MIGRATION_8_9 = object : Migration(8, 9) {
             override fun migrate(db: SupportSQLiteDatabase) {

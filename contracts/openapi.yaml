@@ -391,6 +391,26 @@ components:
             archived: { type: boolean }
             trashedAt: { type: [string, 'null'], format: date-time, readOnly: true }
             purgedAt: { type: [string, 'null'], format: date-time, readOnly: true }
+    TreeAppearance:
+      allOf:
+        - $ref: '#/components/schemas/SyncMetadata'
+        - type: object
+          required: [categoryTreeId, colorHex]
+          properties:
+            categoryTreeId: { type: string, format: uuid }
+            colorHex: { type: string, pattern: '^#[0-9A-Fa-f]{6}$' }
+    Palette:
+      allOf:
+        - $ref: '#/components/schemas/SyncMetadata'
+        - type: object
+          required: [name, categoryColorsJson, itemOrderJson, archived]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 120 }
+            categoryColorsJson: { type: string, maxLength: 100000, description: 'JSON object of at most 1000 unique category UUID keys mapping to null or #RRGGBB. Every category appears once in itemOrderJson.' }
+            itemOrderJson: { type: string, maxLength: 100000, description: 'JSON array of at most 2000 unique c:<category UUID> and t:<task UUID> keys. Deleted task keys may be retained; import removes keys whose tasks are absent.' }
+            archived: { type: boolean }
+            trashedAt: { type: [string, 'null'], format: date-time, readOnly: true }
+            purgedAt: { type: [string, 'null'], format: date-time, readOnly: true }
     Category:
       allOf:
         - $ref: '#/components/schemas/SyncMetadata'
@@ -486,9 +506,9 @@ components:
       properties:
         clientMutationId: { type: string, format: uuid }
         workspaceId: { type: string, format: uuid }
-        entityType: { type: string, enum: [categoryTree, category, event, task, taskComment, plan, budgetAllocation, plannedEvent] }
+        entityType: { type: string, enum: [categoryTree, treeAppearance, palette, category, event, task, taskComment, plan, budgetAllocation, plannedEvent] }
         entityId: { type: string, format: uuid }
-        operation: { type: string, enum: [upsert, delete, purge], description: 'purge is valid only for archived categoryTree records and removes them from the restorable trash.' }
+        operation: { type: string, enum: [upsert, delete, purge], description: 'purge is valid for archived categoryTree and palette records and removes them from the restorable trash.' }
         baseRevision: { type: integer, format: int64, minimum: 0 }
         atomicGroupId: { type: [string, 'null'], format: uuid, description: 'Groups an active-to-inactive task upsert with its taskless closing event. All group members are committed or rejected together.' }
         payload: { type: object, additionalProperties: true }
@@ -526,9 +546,22 @@ components:
             required: [timestamp, level, eventName, attributes, clientId, appVersion]
             properties:
               timestamp: { type: string, format: date-time }
-              level: { type: string }
-              eventName: { type: string, maxLength: 80 }
-              attributes: { type: object, additionalProperties: { type: string } }
+              level: { type: string, enum: [basic, verbose] }
+              eventName: { type: string, enum: [application_started, diagnostic_level_changed, sync_started, sync_succeeded, sync_retry, ui_action_failed, backup_export_succeeded, backup_export_failed, backup_import_succeeded, backup_import_failed, sync_conflict_resolution_queued, pomodoro_notification_denied, pomodoro_settings_saved, profile_actor_rebound] }
+              attributes:
+                type: object
+                description: 'Only allowlisted keys are accepted; each value is at most 120 safe characters.'
+                properties:
+                  durationMs: { type: string }
+                  outcome: { type: string }
+                  errorType: { type: string }
+                  pendingCount: { type: string }
+                  conflictCount: { type: string }
+                  level: { type: string }
+                  phase: { type: string }
+                  operation: { type: string }
+                  status: { type: string }
+                additionalProperties: false
               clientId: { type: string, format: uuid }
               appVersion: { type: string, maxLength: 40 }
     PushResponse:
@@ -557,9 +590,9 @@ components:
         hasMore: { type: boolean }
     WorkspaceSnapshot:
       type: object
-      required: [formatVersion, exportedAt, workspaceId, cursor, categoryTrees, categories, events, tasks, taskComments, plans, budgetAllocations, plannedEvents]
+      required: [formatVersion, exportedAt, workspaceId, cursor, categoryTrees, categories, events, tasks, taskComments, plans, budgetAllocations, plannedEvents, treeAppearances, palettes]
       properties:
-        formatVersion: { type: integer, const: 3 }
+        formatVersion: { type: integer, const: 4 }
         exportedAt: { type: string, format: date-time }
         workspaceId: { type: string, format: uuid }
         cursor: { type: integer, format: int64 }
@@ -571,6 +604,8 @@ components:
         plans: { type: array, items: { $ref: '#/components/schemas/Plan' } }
         budgetAllocations: { type: array, items: { $ref: '#/components/schemas/BudgetAllocation' } }
         plannedEvents: { type: array, items: { $ref: '#/components/schemas/PlannedEvent' } }
+        treeAppearances: { type: array, items: { $ref: '#/components/schemas/TreeAppearance' } }
+        palettes: { type: array, items: { $ref: '#/components/schemas/Palette' } }
     AggregateRow:
       type: object
       required: [categoryTreeId, categoryId, durationSeconds]

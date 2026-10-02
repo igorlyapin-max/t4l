@@ -184,6 +184,48 @@ class HomeAccessibilityTest {
     }
 
     @Test
+    fun homeChoiceChangesCurrentValueAndKeepsSelectionVisible() {
+        compose.activityRule.scenario.onActivity { activity ->
+            activity.setShowWhenLocked(true)
+            activity.setTurnScreenOn(true)
+            activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        val selected = mutableStateOf(HomeDestination.TOMATO)
+        compose.setContent {
+            T4LTheme {
+                HomeDestinationSettingsScreen(selected.value, { selected.value = it }, PaddingValues())
+            }
+        }
+
+        compose.onNodeWithText(compose.activity.getString(R.string.home_screen_current, compose.activity.getString(R.string.pomodoro_timer)))
+            .assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.tasks)).performClick()
+        compose.onNodeWithText(compose.activity.getString(R.string.home_screen_current, compose.activity.getString(R.string.tasks)))
+            .assertIsDisplayed()
+        compose.runOnIdle { assertEquals(HomeDestination.TASKS, selected.value) }
+    }
+
+    @Test
+    fun menuHidesSelectedHomeCandidateAndRestoresPreviousCandidate() {
+        compose.activityRule.scenario.onActivity { activity ->
+            activity.setShowWhenLocked(true)
+            activity.setTurnScreenOn(true)
+            activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        val selected = mutableStateOf(HomeDestination.TOMATO)
+        compose.setContent { T4LTheme { MainMenu("settings", selected.value) {} } }
+
+        compose.onNodeWithContentDescription(compose.activity.getString(R.string.menu)).performClick()
+        compose.onNodeWithText(compose.activity.getString(R.string.home)).assertIsDisplayed()
+        compose.onNodeWithText(compose.activity.getString(R.string.pomodoro_timer)).assertDoesNotExist()
+        compose.onNodeWithText(compose.activity.getString(R.string.tasks)).assertIsDisplayed()
+
+        compose.runOnIdle { selected.value = HomeDestination.TASKS }
+        compose.onNodeWithText(compose.activity.getString(R.string.tasks)).assertDoesNotExist()
+        compose.onNodeWithText(compose.activity.getString(R.string.pomodoro_timer)).assertIsDisplayed()
+    }
+
+    @Test
     fun runningTimerUsesPauseAction() {
         compose.setContent {
             T4LTheme {

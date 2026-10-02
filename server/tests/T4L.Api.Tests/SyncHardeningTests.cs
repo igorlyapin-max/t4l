@@ -1,6 +1,9 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
+using System.Data.Common;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -27,11 +30,32 @@ public sealed class SyncHardeningTests
             new Dictionary<string, string> { ["durationMs"] = "15" }, Guid.NewGuid(), "00.00.00.01");
 
         sink.Write(valid);
+        sink.Write(valid with { EventName = "pomodoro_settings_saved" });
         Assert.Throws<ArgumentException>(() => sink.Write(valid with { EventName = "arbitrary_event" }));
         Assert.Throws<ArgumentException>(() => sink.Write(valid with
         {
             Attributes = new Dictionary<string, string> { ["serverUrl"] = "https://secret.example" }
         }));
+        Assert.Throws<ArgumentException>(() => sink.ValidateBatch([valid, valid with { EventName = "arbitrary_event" }, valid]));
+        sink.ValidateBatch([valid, valid with { EventName = "pomodoro_settings_saved" }, valid]);
+    }
+
+    [Fact]
+    public void DiagnosticEventNamesMatchAndroidAndOpenApi()
+    {
+        var root = new DirectoryInfo(AppContext.BaseDirectory);
+        while (root is not null && !File.Exists(Path.Combine(root.FullName, "android-app/app/src/main/java/app/t4l/StructuredLogger.kt")))
+            root = root.Parent;
+        Assert.NotNull(root);
+        var kotlin = File.ReadAllText(Path.Combine(root!.FullName, "android-app/app/src/main/java/app/t4l/StructuredLogger.kt"));
+        var kotlinNames = Regex.Matches(Regex.Match(kotlin, @"val EVENT_NAMES = setOf\((.*?)\)", RegexOptions.Singleline).Groups[1].Value, "\"([a-z_]+)\"")
+            .Select(match => match.Groups[1].Value).Order(StringComparer.Ordinal).ToArray();
+        var contract = File.ReadAllText(Path.Combine(root.FullName, "contracts/openapi.yaml"));
+        var contractNames = Regex.Match(contract, @"eventName: \{ type: string, enum: \[([^\]]+)\] \}").Groups[1].Value
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).Order(StringComparer.Ordinal).ToArray();
+        var serverNames = ClientDiagnosticSink.EventNames.Order(StringComparer.Ordinal).ToArray();
+        Assert.Equal(serverNames, kotlinNames);
+        Assert.Equal(serverNames, contractNames);
     }
 
     [Fact]
@@ -106,6 +130,133 @@ public sealed class SyncHardeningTests
         Assert.NotNull((await db.CategoryTrees.SingleAsync(x => x.Id == id, ct)).PurgedAt);
         Assert.Equal("category_tree_purged", (await Push("upsert", 5, false)).ErrorCode);
     });
+
+    [Fact]
+    public Task RetentionPurgesOnlyExpiredTreesAndPalettesAndPublishesChanges() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var expiredTree = new CategoryTreeEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Old tree", Archived = true,
+            TrashedAt = now.AddDays(-31), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-31) };
+        var recentTree = new CategoryTreeEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Recent tree", Archived = true,
+            TrashedAt = now.AddDays(-29), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-29) };
+        var expiredPalette = new PaletteEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Old palette", Archived = true,
+            TrashedAt = now.AddDays(-31), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-31) };
+        var recentPalette = new PaletteEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Recent palette", Archived = true,
+            TrashedAt = now.AddDays(-29), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-29) };
+        db.CategoryTrees.AddRange(expiredTree, recentTree);
+        db.Palettes.AddRange(expiredPalette, recentPalette);
+        await db.SaveChangesAsync(ct);
+        var services = new ServiceCollection();
+        services.AddDbContext<T4LDbContext>(options => options.UseNpgsql(db.Database.GetConnectionString()));
+        await using var provider = services.BuildServiceProvider();
+        var worker = new CategoryTreeRetentionWorker(provider.GetRequiredService<IServiceScopeFactory>(), TimeProvider.System,
+            NullLogger<CategoryTreeRetentionWorker>.Instance);
+        await worker.PurgeExpiredAsync(ct);
+
+        await db.Entry(expiredTree).ReloadAsync(ct);
+        await db.Entry(recentTree).ReloadAsync(ct);
+        await db.Entry(expiredPalette).ReloadAsync(ct);
+        await db.Entry(recentPalette).ReloadAsync(ct);
+
+        Assert.NotNull(expiredTree.PurgedAt);
+        Assert.NotNull(expiredPalette.PurgedAt);
+        Assert.Null(recentTree.PurgedAt);
+        Assert.Null(recentPalette.PurgedAt);
+        Assert.Equal(2, expiredTree.Revision);
+        Assert.Equal(2, expiredPalette.Revision);
+        var changes = await sync.PullAsync(DevelopmentIdentity.WorkspaceId, 0, 100, ct);
+        Assert.Contains(changes.Changes, x => x.EntityType == "categoryTree" && x.EntityId == expiredTree.Id && x.Revision == 2);
+        Assert.Contains(changes.Changes, x => x.EntityType == "palette" && x.EntityId == expiredPalette.Id && x.Revision == 2);
+    });
+
+    [Fact]
+    public Task MalformedPaletteIsRejectedBySyncAndImportWithoutCreatingWorkspace() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var invalid = new PaletteEntity { Name = "Bad", CategoryColorsJson = "{\"not-a-uuid\":\"red\"}", ItemOrderJson = "[]" };
+        var result = (await sync.PushAsync(new PushRequest(Guid.NewGuid(), [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "palette", Guid.NewGuid(), "upsert", 0, JsonSerializer.SerializeToElement(invalid))]), ct)).Results.Single();
+        Assert.Equal("rejected", result.Status);
+        Assert.Equal("invalid_palette_category", result.ErrorCode);
+
+        var workspaceCount = await db.Workspaces.CountAsync(ct);
+        var snapshot = JsonSerializer.SerializeToElement(new {
+            formatVersion = 4,
+            categoryTrees = Array.Empty<CategoryTreeEntity>(), categories = Array.Empty<CategoryEntity>(),
+            events = Array.Empty<TimeEventEntity>(), tasks = Array.Empty<TaskEntity>(), taskComments = Array.Empty<TaskCommentEntity>(),
+            plans = Array.Empty<PlanEntity>(), budgetAllocations = Array.Empty<BudgetAllocationEntity>(),
+            plannedEvents = Array.Empty<PlannedEventEntity>(), treeAppearances = Array.Empty<TreeAppearanceEntity>(), palettes = new[] { invalid }
+        });
+        var transfer = new WorkspaceTransferService(db, TimeProvider.System, new TestActor());
+        await Assert.ThrowsAsync<ArgumentException>(() => transfer.ImportAsync(new WorkspaceImportRequest("Imported", snapshot), ct));
+        var wrongType = JsonSerializer.SerializeToElement(new {
+            formatVersion = 4,
+            categoryTrees = Array.Empty<CategoryTreeEntity>(), categories = Array.Empty<CategoryEntity>(),
+            events = Array.Empty<TimeEventEntity>(), tasks = Array.Empty<TaskEntity>(), taskComments = Array.Empty<TaskCommentEntity>(),
+            plans = Array.Empty<PlanEntity>(), budgetAllocations = Array.Empty<BudgetAllocationEntity>(),
+            plannedEvents = Array.Empty<PlannedEventEntity>(), treeAppearances = Array.Empty<TreeAppearanceEntity>(),
+            palettes = new[] { new { name = "Bad", categoryColorsJson = 123, itemOrderJson = "[]" } }
+        });
+        await Assert.ThrowsAsync<ArgumentException>(() => transfer.ImportAsync(new WorkspaceImportRequest("Imported", wrongType), ct));
+        Assert.Equal(workspaceCount, await db.Workspaces.CountAsync(ct));
+    });
+
+    [Fact]
+    public Task ExpiredTreeAndPaletteCannotBeRestored() => WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var tree = new CategoryTreeEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Old tree", Archived = true,
+            TrashedAt = now.AddDays(-31), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-31) };
+        var palette = new PaletteEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Old palette", Archived = true,
+            TrashedAt = now.AddDays(-31), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-31) };
+        db.CategoryTrees.Add(tree); db.Palettes.Add(palette); await db.SaveChangesAsync(ct);
+        var client = Guid.NewGuid();
+        var treeResult = (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "categoryTree", tree.Id, "upsert", 1, JsonSerializer.SerializeToElement(new { name = "Old tree", role = "primary", sortOrder = 0, archived = false }))]), ct)).Results.Single();
+        var paletteResult = (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "palette", palette.Id, "upsert", 1, JsonSerializer.SerializeToElement(new { name = "Old palette", categoryColorsJson = "{}", itemOrderJson = "[]", archived = false }))]), ct)).Results.Single();
+        Assert.Equal("category_tree_retention_expired", treeResult.ErrorCode);
+        Assert.Equal("palette_retention_expired", paletteResult.ErrorCode);
+        Assert.True(tree.Archived);
+        Assert.True(palette.Archived);
+    });
+
+    [Fact]
+    public Task PaletteReferenceValidationUsesBoundedDatabaseQueries() => WithDatabaseAsync(async (_, db, ct) =>
+    {
+        var now = DateTimeOffset.UtcNow;
+        var treeId = Guid.NewGuid();
+        db.CategoryTrees.Add(new CategoryTreeEntity { Id = treeId, WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Activity",
+            CreatedAt = now, UpdatedAt = now, Revision = 1 });
+        var ids = Enumerable.Range(0, 100).Select(_ => Guid.NewGuid()).ToArray();
+        db.Categories.AddRange(ids.Select((id, index) => new CategoryEntity { Id = id, WorkspaceId = DevelopmentIdentity.WorkspaceId,
+            CategoryTreeId = treeId, Name = $"Category {index}", CreatedAt = now, UpdatedAt = now, Revision = 1 }));
+        await db.SaveChangesAsync(ct);
+
+        var counter = new QueryCounter();
+        var options = new DbContextOptionsBuilder<T4LDbContext>().UseNpgsql(db.Database.GetConnectionString()).AddInterceptors(counter).Options;
+        await using var countedDb = new T4LDbContext(options);
+        var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
+        await using var provider = services.BuildServiceProvider();
+        var countedSync = new SyncService(countedDb, provider.GetRequiredService<IHubContext<ChangeHub>>(), new WorkspaceAccess(new TestActor()),
+            TimeProvider.System, NullLogger<SyncService>.Instance);
+        var payload = new { name = "Many", categoryColorsJson = JsonSerializer.Serialize(ids.ToDictionary(id => id, _ => (string?)null)),
+            itemOrderJson = JsonSerializer.Serialize(ids.Select(id => $"c:{id:D}")), archived = false };
+        var result = (await countedSync.PushAsync(new PushRequest(Guid.NewGuid(), [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "palette", Guid.NewGuid(), "upsert", 0, JsonSerializer.SerializeToElement(payload))]), ct)).Results.Single();
+        Assert.Equal("applied", result.Status);
+        Assert.InRange(counter.Count, 1, 20);
+    });
+
+    private sealed class QueryCounter : DbCommandInterceptor
+    {
+        public int Count { get; private set; }
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
+            CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
+        {
+            Count++;
+            return base.ReaderExecutingAsync(command, eventData, result, cancellationToken);
+        }
+    }
 
     [Fact]
     public Task ArchivedTreeRejectsNewFactsButPreservesHistoricalTimeEditsAndCategoryState() => WithDatabaseAsync(async (sync, db, ct) =>

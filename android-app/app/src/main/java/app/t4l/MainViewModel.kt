@@ -27,6 +27,7 @@ import kotlinx.coroutines.withContext
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as T4LApplication
     private val repository = app.repository
+    val timelineUiStore: TimelineUiStore get() = app.timelineUiStore
     val dashboard: StateFlow<DashboardState> = repository.dashboard.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), DashboardState())
     val taskState: StateFlow<TaskState> = repository.taskState.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TaskState())
     val plannerState: StateFlow<PlannerState> = repository.plannerState.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PlannerState())
@@ -37,6 +38,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val profileActorResolved: StateFlow<Boolean> = app.profileRepository.actorResolved
     val pomodoro: StateFlow<PomodoroState> = app.pomodoroStore.state
     val taskListSettings: StateFlow<TaskListSettings> = app.taskListSettings.state
+    val homeDestination: StateFlow<HomeDestination> = app.homeDestinationStore.state
     val uiFeedback = MutableStateFlow<UiFeedback?>(null)
     val backupState = MutableStateFlow<BackupUiState>(BackupUiState.Idle)
     private var pendingEncryptedBackup: String? = null
@@ -47,6 +49,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun moveCategory(id: String, placement: CategoryPlacement) = mutate { repository.moveCategory(id, placement) }
     fun renameCategory(id: String, name: String) = mutate { repository.renameCategory(id, name) }
     fun renameCategoryTree(id: String, name: String) = mutate { repository.renameCategoryTree(id, name) }
+    fun setTreeColor(id: String, colorHex: String) = mutate { repository.setTreeColor(id, colorHex) }
+    fun createPalette(name: String, onCreated: ((String) -> Unit)? = null) = viewModelScope.launch {
+        runCatching { repository.createPalette(name) }
+            .onSuccess { id -> app.syncScheduler.scheduleAfterChange(); onCreated?.invoke(id) }
+            .onFailure { error -> showFailure(error); app.logger.event("ui_action_failed", mapOf("errorType" to error.javaClass.simpleName)) }
+    }
+    fun renamePalette(id: String, name: String) = mutate { repository.renamePalette(id, name) }
+    fun addPaletteCategory(id: String, categoryId: String) = mutate { repository.addPaletteCategory(id, categoryId) }
+    fun removePaletteCategory(id: String, categoryId: String) = mutate { repository.removePaletteCategory(id, categoryId) }
+    fun setPaletteCategoryColor(id: String, categoryId: String, colorHex: String?) = mutate { repository.setPaletteCategoryColor(id, categoryId, colorHex) }
+    fun reorderPalette(id: String, order: List<String>) = mutate { repository.reorderPalette(id, order) }
+    fun archivePalette(id: String) = mutate { repository.archivePalette(id) }
+    fun restorePalette(id: String) = mutate { repository.restorePalette(id) }
+    fun purgePalette(id: String) = mutate { repository.purgePalette(id) }
     fun archiveCategory(id: String) = mutate { repository.archiveCategory(id) }
     fun archiveCategoryTree(id: String) = mutate { repository.archiveCategoryTree(id) }
     fun restoreCategoryTree(id: String) = mutate { repository.restoreCategoryTree(id) }
@@ -69,11 +85,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
     fun reorderTask(id: String, targetId: String, after: Boolean) = mutate { repository.reorderTask(id, targetId, after) }
     fun updateTaskListSettings(value: TaskListSettings) = app.taskListSettings.update(value)
+    fun updateHomeDestination(value: HomeDestination) = app.homeDestinationStore.update(value)
     fun setTaskStatus(id: String, status: String) = mutate { repository.setTaskStatus(id, status) }
     fun deleteTask(id: String) = mutate { repository.deleteTask(id) }
     fun addTaskComment(id: String, text: String) = mutate { repository.addTaskComment(id, text) }
     fun startTask(id: String) = mutate { repository.startTask(id) }
-    fun createPlan(name: String, startsAt: Long, endsAt: Long) = mutate { repository.createPlan(name, startsAt, endsAt) }
+    fun createPlan(name: String, startsAt: Long, endsAt: Long, onCreated: ((String) -> Unit)? = null) = viewModelScope.launch {
+        runCatching { repository.createPlan(name, startsAt, endsAt) }
+            .onSuccess { id -> app.syncScheduler.scheduleAfterChange(); onCreated?.invoke(id) }
+            .onFailure { error -> showFailure(error); app.logger.event("ui_action_failed", mapOf("errorType" to error.javaClass.simpleName)) }
+    }
     fun updatePlanPeriod(id: String, startsAt: Long, endsAt: Long, onComplete: ((Boolean) -> Unit)? = null) =
         mutate(onComplete) { repository.updatePlanPeriod(id, startsAt, endsAt) }
     fun archivePlan(id: String) = mutate { repository.archivePlan(id) }

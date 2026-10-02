@@ -325,7 +325,7 @@ api.MapGet("/sync/snapshot", async (Guid workspaceId, T4LDbContext db, Workspace
         .MaxAsync(x => (long?)x.Sequence, ct) ?? 0;
     return Results.Ok(new
     {
-        formatVersion = 3,
+        formatVersion = 4,
         exportedAt = DateTimeOffset.UtcNow,
         workspaceId,
         cursor,
@@ -336,7 +336,9 @@ api.MapGet("/sync/snapshot", async (Guid workspaceId, T4LDbContext db, Workspace
         taskComments = await db.TaskComments.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct),
         plans = await db.Plans.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct),
         budgetAllocations = await db.BudgetAllocations.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct),
-        plannedEvents = await db.PlannedEvents.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct)
+        plannedEvents = await db.PlannedEvents.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct),
+        treeAppearances = await db.TreeAppearances.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct),
+        palettes = await db.Palettes.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && x.DeletedAt == null).ToArrayAsync(ct)
     });
 });
 api.MapPost("/imports", (WorkspaceImportRequest request, WorkspaceTransferService transfer, CancellationToken ct) =>
@@ -344,7 +346,7 @@ api.MapPost("/imports", (WorkspaceImportRequest request, WorkspaceTransferServic
 api.MapPost("/diagnostics/events", async (ClientDiagnosticBatch batch, ICurrentActor actor, ClientDiagnosticSink sink, CancellationToken ct) =>
 {
     _ = await actor.GetAsync(ct);
-    if (batch.Events.Count is < 1 or > 100) throw new ArgumentException("A diagnostic batch must contain between 1 and 100 events.");
+    sink.ValidateBatch(batch.Events);
     foreach (var item in batch.Events) sink.Write(item);
     return Results.Accepted();
 });

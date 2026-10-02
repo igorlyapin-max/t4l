@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import java.time.LocalDate
@@ -120,13 +121,16 @@ private fun datePresetLabels(kind: DatePresets): List<Int> = when (kind) {
 }
 
 @Composable
-internal fun DateTimeField(value: String, label: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, optional: Boolean = false, invalid: Boolean = false, presets: DateTimePresets = DateTimePresets.NONE, reference: LocalDateTime? = null, minValue: LocalDateTime? = null, maxValue: LocalDateTime? = null) {
+internal fun DateTimeField(value: String, label: String, onValueChange: (String) -> Unit, modifier: Modifier = Modifier, optional: Boolean = false, invalid: Boolean = false, presets: DateTimePresets = DateTimePresets.NONE, reference: LocalDateTime? = null, minValue: LocalDateTime? = null, maxValue: LocalDateTime? = null, compact: Boolean = false) {
     val context = LocalContext.current
     val locale = LocalConfiguration.current.locales[0]
     val selected = runCatching { LocalDateTime.parse(value, storedDateTime) }.getOrNull()
     var open by rememberSaveable { mutableStateOf(false) }
     var draft by rememberSaveable { mutableStateOf(value) }
-    PickerField(label, selected?.format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT).withLocale(locale)) ?: "—", optional, invalid, { onValueChange("") }, modifier) {
+    val fullValue = selected?.format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT).withLocale(locale)) ?: "—"
+    val visibleValue = if (compact) selected?.format(DateTimeFormatter.ofPattern("dd.MM.yy HH:mm"))
+        ?: if (optional) stringResource(R.string.palette_now) else "—" else fullValue
+    PickerField(label, visibleValue, optional, invalid, { onValueChange("") }, modifier, compact = compact, spokenValue = fullValue) {
         draft = value.ifBlank { LocalDateTime.now().withSecond(0).withNano(0).format(storedDateTime) }
         open = true
     }
@@ -152,6 +156,7 @@ internal fun DateTimeField(value: String, label: String, onValueChange: (String)
                     TimePickerDialog(context, { _, h, m -> draft = initial.toLocalDate().atTime(h, m).format(storedDateTime) }, initial.hour, initial.minute, DateFormat.is24HourFormat(context)).show()
                 }, Modifier.fillMaxWidth()) { Text(stringResource(R.string.picker_choose_time)) }
                 Text(chosen?.format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT).withLocale(locale)) ?: "—")
+                if (optional) TextButton(onClick = { onValueChange(""); open = false }) { Text(stringResource(R.string.clear)) }
                 if (!valid) Text(stringResource(R.string.invalid_date_time), color = MaterialTheme.colorScheme.error)
             }
         }, confirmButton = { TextButton(enabled = valid, onClick = { onValueChange(draft); open = false }) { Text(stringResource(R.string.picker_done)) } }, dismissButton = { TextButton(onClick = { open = false }) { Text(stringResource(R.string.cancel)) } })
@@ -191,13 +196,15 @@ internal fun TimeField(value: String, label: String, onValueChange: (String) -> 
 }
 
 @Composable
-private fun PickerField(label: String, value: String, optional: Boolean, invalid: Boolean, onClear: () -> Unit, modifier: Modifier, onPick: () -> Unit) {
+private fun PickerField(label: String, value: String, optional: Boolean, invalid: Boolean, onClear: () -> Unit, modifier: Modifier, compact: Boolean = false, spokenValue: String = value, onPick: () -> Unit) {
     Column(modifier, verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+        if (!compact) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(label, style = MaterialTheme.typography.labelLarge)
             if (optional && value != "—") TextButton(onClick = onClear) { Text(stringResource(R.string.clear)) }
         }
-        OutlinedButton(onClick = onPick, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "$label: $value" }) { Text(value, maxLines = 2) }
+        OutlinedButton(onClick = onPick, modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp).semantics { contentDescription = "$label: $spokenValue" }) {
+            Text(value, maxLines = if (compact) 1 else 2, overflow = TextOverflow.Ellipsis)
+        }
         if (invalid) Text(stringResource(R.string.invalid_date_time), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
     }
 }

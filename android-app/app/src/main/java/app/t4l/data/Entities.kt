@@ -22,6 +22,36 @@ data class CategoryTreeRow(
     val purgedAtEpochMs: Long? = null,
 )
 
+@Entity(tableName = "tree_appearances", indices = [Index("workspaceId")])
+data class TreeAppearanceRow(
+    @PrimaryKey val id: String,
+    val workspaceId: String,
+    val categoryTreeId: String,
+    val colorHex: String,
+    val revision: Long = 0,
+    val updatedAtEpochMs: Long,
+    val deletedAtEpochMs: Long? = null,
+    val syncState: LocalSyncState = LocalSyncState.PENDING,
+)
+
+@Entity(tableName = "palettes", indices = [Index("workspaceId")])
+data class PaletteRow(
+    @PrimaryKey val id: String,
+    val workspaceId: String,
+    val name: String,
+    /** JSON object from category UUID to optional #RRGGBB override. */
+    val categoryColorsJson: String = "{}",
+    /** JSON array of category/task keys: c:<uuid> or t:<uuid>. */
+    val itemOrderJson: String = "[]",
+    val archived: Boolean = false,
+    val trashedAtEpochMs: Long? = null,
+    val purgedAtEpochMs: Long? = null,
+    val revision: Long = 0,
+    val updatedAtEpochMs: Long,
+    val deletedAtEpochMs: Long? = null,
+    val syncState: LocalSyncState = LocalSyncState.PENDING,
+)
+
 @Entity(tableName = "categories", indices = [Index("workspaceId"), Index("categoryTreeId"), Index("parentId")])
 data class CategoryRow(
     @PrimaryKey val id: String,

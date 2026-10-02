@@ -11,6 +11,8 @@ public sealed class T4LDbContext(DbContextOptions<T4LDbContext> options) : DbCon
     public DbSet<WorkspaceEntity> Workspaces => Set<WorkspaceEntity>();
     public DbSet<MembershipEntity> Memberships => Set<MembershipEntity>();
     public DbSet<CategoryTreeEntity> CategoryTrees => Set<CategoryTreeEntity>();
+    public DbSet<TreeAppearanceEntity> TreeAppearances => Set<TreeAppearanceEntity>();
+    public DbSet<PaletteEntity> Palettes => Set<PaletteEntity>();
     public DbSet<CategoryEntity> Categories => Set<CategoryEntity>();
     public DbSet<TimeEventEntity> Events => Set<TimeEventEntity>();
     public DbSet<TaskEntity> Tasks => Set<TaskEntity>();
@@ -36,6 +38,8 @@ public sealed class T4LDbContext(DbContextOptions<T4LDbContext> options) : DbCon
         modelBuilder.Entity<MembershipEntity>().HasOne<UserEntity>().WithMany().HasForeignKey(x => x.UserId);
 
         ConfigureSync<CategoryTreeEntity>(modelBuilder);
+        ConfigureSync<TreeAppearanceEntity>(modelBuilder);
+        ConfigureSync<PaletteEntity>(modelBuilder);
         ConfigureSync<CategoryEntity>(modelBuilder);
         ConfigureSync<TimeEventEntity>(modelBuilder);
         ConfigureSync<TaskEntity>(modelBuilder);

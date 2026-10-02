@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -40,15 +41,22 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.DragHandle
+import androidx.compose.material.icons.filled.FilterAlt
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Restore
+import androidx.compose.material.icons.filled.Unarchive
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -77,6 +85,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -94,10 +103,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
@@ -212,12 +223,13 @@ class MainActivity : AppCompatActivity() {
 }
 
 private enum class Screen(val route: String, val label: Int, val menuItem: Boolean = true) {
-    HOME("home", R.string.home), TRACK("track", R.string.track), HISTORY("history", R.string.history),
+    HOME("home", R.string.home), TOMATO("tomato", R.string.pomodoro_timer), TRACK("track", R.string.track), HISTORY("history", R.string.history),
     PLANNER("planner", R.string.planner), TASKS("tasks", R.string.tasks), REPORTS("reports", R.string.reports), SETTINGS("settings", R.string.settings),
     TASK_DETAILS("tasks/{taskId}", R.string.task, false),
     CATEGORY_TREE("track/{treeId}", R.string.category_tree, false),
     PROFILE("profile", R.string.profile, false), LIFE("life", R.string.life_visualization, false),
-    NETWORK("settings/network", R.string.network, false), TIMER_SETTINGS("settings/tomato", R.string.pomodoro_timer, false),
+    HOME_SETTINGS("settings/home", R.string.home_screen, false),
+    NETWORK("settings/network", R.string.network, false), TIMER_SETTINGS("settings/tomato", R.string.tomato_timer_settings, false),
     BACKUP("settings/backup", R.string.backup, false),
     SECURITY("settings/security", R.string.security, false), DIAGNOSTICS("settings/diagnostics", R.string.diagnostics, false),
     SYNC_ISSUES("settings/diagnostics/sync-issues", R.string.sync_issues, false), LANGUAGE("settings/language", R.string.language, false),
@@ -259,11 +271,11 @@ private fun T4LRoot(viewModel: MainViewModel = viewModel()) {
     val profileActorResolved by viewModel.profileActorResolved.collectAsStateWithLifecycle()
     val pomodoro by viewModel.pomodoro.collectAsStateWithLifecycle()
     val taskListSettings by viewModel.taskListSettings.collectAsStateWithLifecycle()
+    val homeDestination by viewModel.homeDestination.collectAsStateWithLifecycle()
     val feedback by viewModel.uiFeedback.collectAsStateWithLifecycle()
     val navController = rememberNavController()
     val entry by navController.currentBackStackEntryAsState()
     val screen = Screen.entries.firstOrNull { it.route == entry?.destination?.route } ?: Screen.HOME
-    var menu by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     val openTask: (String) -> Unit = { taskId -> navController.navigate(taskRoute(taskId)) { launchSingleTop = true } }
     val openLife: () -> Unit = {
@@ -288,25 +300,23 @@ private fun T4LRoot(viewModel: MainViewModel = viewModel()) {
                 navController.navigate(Screen.DIAGNOSTICS.route) { launchSingleTop = true }
             }
             if (screen.menuItem) {
-            Box {
-                IconButton(modifier = Modifier.size(48.dp), onClick = { menu = true }) {
-                    Icon(Icons.Filled.Menu, contentDescription = stringResource(R.string.menu))
+                MainMenu(screen.route, homeDestination) { route ->
+                    navController.navigate(route) { popUpTo(Screen.HOME.route) { saveState = true }; launchSingleTop = true; restoreState = true }
                 }
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    Screen.entries.filter { it.menuItem }.forEach { item -> DropdownMenuItem(text = { Text((if (item == screen) "✓ " else "") + stringResource(item.label)) }, onClick = {
-                        navController.navigate(item.route) { popUpTo(Screen.HOME.route) { saveState = true }; launchSingleTop = true; restoreState = true }
-                        menu = false
-                    }) }
-                }
-            }
             }
         })
     }) { padding ->
         NavHost(navController, startDestination = Screen.HOME.route) {
-            composable(Screen.HOME.route) { HomeScreen(pomodoro, padding) }
-            composable(Screen.TRACK.route) {
-                TrackScreen(dashboard, viewModel, padding) { treeId ->
+            composable(Screen.HOME.route) {
+                MainDestinationContent(homeDestination, true, dashboard, taskState, plannerState, taskListSettings, pomodoro, viewModel, padding, openTask) { treeId ->
                     navController.navigate(categoryTreeRoute(treeId)) { launchSingleTop = true }
+                }
+            }
+            HomeDestination.entries.forEach { destination ->
+                composable(destination.route) {
+                    MainDestinationContent(destination, false, dashboard, taskState, plannerState, taskListSettings, pomodoro, viewModel, padding, openTask) { treeId ->
+                        navController.navigate(categoryTreeRoute(treeId)) { launchSingleTop = true }
+                    }
                 }
             }
             composable(Screen.CATEGORY_TREE.route, arguments = listOf(navArgument("treeId") { type = NavType.StringType })) { destination ->
@@ -318,14 +328,11 @@ private fun T4LRoot(viewModel: MainViewModel = viewModel()) {
                     onBack = { navController.popBackStack() },
                 )
             }
-            composable(Screen.HISTORY.route) { HistoryScreen(dashboard, taskState, viewModel, padding, openTask) }
-            composable(Screen.PLANNER.route) { PlannerScreen(dashboard, taskState, plannerState, viewModel, padding, openTask) }
-            composable(Screen.TASKS.route) { TasksScreen(dashboard, taskState, taskListSettings, viewModel, padding, openTask) }
             composable(Screen.TASK_DETAILS.route, arguments = listOf(navArgument("taskId") { type = NavType.StringType })) { destination ->
                 TaskDetailsScreen(destination.arguments?.getString("taskId").orEmpty(), dashboard, taskState, taskListSettings, viewModel, padding, openTask)
             }
-            composable(Screen.REPORTS.route) { ReportsScreen(dashboard, viewModel, padding) }
             composable(Screen.SETTINGS.route) { SettingsRoot(padding) { navController.navigate(it.route) } }
+            composable(Screen.HOME_SETTINGS.route) { HomeDestinationSettingsScreen(homeDestination, viewModel::updateHomeDestination, padding) }
             composable(Screen.NETWORK.route) { SettingsScreen(SettingsSection.NETWORK, viewModel, syncState, personalConflicts, dashboard, taskState, plannerState, workspaces, padding) { navController.navigate(it.route) } }
             composable(Screen.TIMER_SETTINGS.route) { PomodoroSettingsScreen(pomodoro, viewModel, padding) }
             composable(Screen.BACKUP.route) { SettingsScreen(SettingsSection.BACKUP, viewModel, syncState, personalConflicts, dashboard, taskState, plannerState, workspaces, padding) { navController.navigate(it.route) } }
@@ -343,6 +350,48 @@ private fun T4LRoot(viewModel: MainViewModel = viewModel()) {
             ) }
             composable(Screen.LIFE.route) { profile?.takeIf { it.birthDateEpochDay != null && it.lifeExpectancyYears != null }?.let { LifeVisualizationScreen(it, padding) } }
         }
+    }
+}
+
+@Composable
+internal fun MainMenu(currentRoute: String, homeDestination: HomeDestination, onNavigate: (String) -> Unit) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+    Box {
+        IconButton(modifier = Modifier.size(48.dp), onClick = { expanded = true }) {
+            Icon(Icons.Filled.Menu, contentDescription = stringResource(R.string.menu))
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Screen.entries.filter { it.menuItem && isVisibleMainMenuRoute(it.route, homeDestination) }.forEach { item ->
+                DropdownMenuItem(
+                    text = { Text((if (item.route == currentRoute) "✓ " else "") + stringResource(item.label)) },
+                    onClick = { expanded = false; onNavigate(item.route) },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun MainDestinationContent(
+    destination: HomeDestination,
+    isHome: Boolean,
+    dashboard: DashboardState,
+    tasks: TaskState,
+    planner: PlannerState,
+    taskListSettings: TaskListSettings,
+    pomodoro: PomodoroState,
+    vm: MainViewModel,
+    padding: PaddingValues,
+    onOpenTask: (String) -> Unit,
+    onOpenTree: (String) -> Unit,
+) {
+    when (destination) {
+        HomeDestination.TOMATO -> TomatoTimerScreen(pomodoro, padding, if (isHome) R.string.home else R.string.pomodoro_timer)
+        HomeDestination.TRACK -> TrackScreen(dashboard, vm, padding, onOpenTree)
+        HomeDestination.HISTORY -> HistoryScreen(dashboard, tasks, vm, padding, onOpenTask)
+        HomeDestination.PLANNER -> PlannerScreen(dashboard, tasks, planner, vm, padding, onOpenTask)
+        HomeDestination.TASKS -> TasksScreen(dashboard, tasks, taskListSettings, vm, padding, onOpenTask)
+        HomeDestination.REPORTS -> ReportsScreen(dashboard, vm, padding)
     }
 }
 
@@ -396,11 +445,21 @@ internal fun SyncStatusIndicator(state: SyncUiState, personalConflictCount: Int 
 
 @Composable
 private fun TrackScreen(state: DashboardState, vm: MainViewModel, padding: PaddingValues, onOpenTree: (String) -> Unit) {
+    val workspaceId = vm.selectedWorkspace()
+    val store = vm.timelineUiStore
     var showDeleted by rememberSaveable { mutableStateOf(false) }
+    var activePane by rememberSaveable { mutableStateOf("trees") }
+    var splitFraction by remember(workspaceId) { mutableFloatStateOf(store.categorizationSplit(workspaceId)) }
+    var paletteContentHeight by remember { mutableStateOf(0) }
+    var treeContentHeight by remember { mutableStateOf(0) }
+    var editingPalette by remember { mutableStateOf(false) }
+    var newPalette by rememberSaveable { mutableStateOf(false) }
     var newTree by rememberSaveable { mutableStateOf(false) }
     var renameTreeId by rememberSaveable { mutableStateOf<String?>(null) }
+    var colorTreeId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteTreeId by rememberSaveable { mutableStateOf<String?>(null) }
     var purgeTreeId by rememberSaveable { mutableStateOf<String?>(null) }
+    var purgePaletteId by rememberSaveable { mutableStateOf<String?>(null) }
     var revealedTreeId by rememberSaveable { mutableStateOf<String?>(null) }
     var actionBounds by remember { mutableStateOf<Rect?>(null) }
     var screenOrigin by remember { mutableStateOf(Offset.Zero) }
@@ -410,7 +469,9 @@ private fun TrackScreen(state: DashboardState, vm: MainViewModel, padding: Paddi
         revealedTreeId = null
         actionBounds = null
     }
-    BackHandler(enabled = revealedTreeId != null, onBack = ::closeActions)
+    BackHandler(enabled = showDeleted || revealedTreeId != null) {
+        if (revealedTreeId != null) closeActions() else showDeleted = false
+    }
     Box(
         Modifier.fillMaxSize().padding(padding)
             .onGloballyPositioned { screenOrigin = it.positionInRoot() }
@@ -430,75 +491,109 @@ private fun TrackScreen(state: DashboardState, vm: MainViewModel, padding: Paddi
                 }
             },
     ) {
-        LazyColumn(
-            Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            item { ScreenHeading(R.string.track) }
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { showDeleted = false }, enabled = showDeleted) { Text(stringResource(R.string.active_trees)) }
-                    Button(onClick = { showDeleted = true }, enabled = !showDeleted) { Text(stringResource(R.string.deleted_trees)) }
+        Column(Modifier.fillMaxSize()) {
+            Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = { closeActions(); showDeleted = !showDeleted }) {
+                    Icon(if (showDeleted) Icons.Filled.Unarchive else Icons.Filled.Archive,
+                        contentDescription = stringResource(if (showDeleted) R.string.return_to_active else R.string.deleted_label))
+                }
+                if (!showDeleted) IconButton(onClick = {
+                    if (revealedTreeId != null) closeActions()
+                    else if (activePane == "palettes") newPalette = true else newTree = true
+                }) {
+                    Icon(Icons.Filled.Add, contentDescription = stringResource(if (activePane == "palettes") R.string.new_palette else R.string.create_category_tree))
                 }
             }
             if (showDeleted) {
-                if (state.trashedCategoryTrees.isEmpty()) item { Text(stringResource(R.string.no_deleted_trees)) }
-                items(state.trashedCategoryTrees, key = { it.id }) { tree ->
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text(tree.name, style = MaterialTheme.typography.titleMedium)
-                            tree.trashedAtEpochMs?.let { trashedAt ->
-                                Text(stringResource(R.string.tree_trash_expires, formatEpoch(trashedAt + 30L * 24 * 60 * 60 * 1000)), style = MaterialTheme.typography.bodySmall)
+                val deleted = (state.trashedCategoryTrees.map { DeletedCategorizationItem(tree = it) } +
+                    state.trashedPalettes.map { DeletedCategorizationItem(palette = it) }).sortedByDescending { it.deletedAt }
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 8.dp)) {
+                    if (deleted.isEmpty()) Text(stringResource(R.string.no_deleted_categorization), Modifier.padding(8.dp))
+                    deleted.forEach { item ->
+                        val tree = item.tree
+                        val palette = item.palette
+                        val trashedAt = tree?.trashedAtEpochMs ?: palette?.trashedAtEpochMs
+                        Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f).padding(8.dp)) {
+                                Text(tree?.name ?: palette?.name.orEmpty(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(stringResource(if (tree != null) R.string.trees_label else R.string.palettes_label), style = MaterialTheme.typography.bodySmall)
+                                if (trashedAt != null) {
+                                    val locale = LocalConfiguration.current.locales[0] ?: Locale.getDefault()
+                                    val expiry = Instant.ofEpochMilli(trashedAt).plus(java.time.Duration.ofDays(30))
+                                        .atZone(ZoneId.systemDefault()).format(DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM, FormatStyle.SHORT).withLocale(locale))
+                                    Text(stringResource(if (System.currentTimeMillis() < trashedAt + 30L * 24 * 60 * 60 * 1000)
+                                        R.string.restorable_until else R.string.restore_period_ended, expiry), style = MaterialTheme.typography.bodySmall)
+                                } else Text(stringResource(R.string.restore_date_pending), style = MaterialTheme.typography.bodySmall)
                             }
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                TextButton(enabled = tree.trashedAtEpochMs?.let { System.currentTimeMillis() - it < 30L * 24 * 60 * 60 * 1000 } == true, onClick = { vm.restoreCategoryTree(tree.id) }) { Text(stringResource(R.string.restore)) }
-                                TextButton(enabled = tree.syncState == app.t4l.data.LocalSyncState.SYNCED && state.categories.none { it.categoryTreeId == tree.id && it.syncState != app.t4l.data.LocalSyncState.SYNCED }, onClick = { purgeTreeId = tree.id }) { Text(stringResource(R.string.delete_permanently)) }
+                            IconButton(enabled = trashedAt?.let { System.currentTimeMillis() - it < 30L * 24 * 60 * 60 * 1000 } == true, onClick = {
+                                if (tree != null) vm.restoreCategoryTree(tree.id) else palette?.let { vm.restorePalette(it.id) }
+                            }) { Icon(Icons.Filled.Restore, contentDescription = stringResource(R.string.restore)) }
+                            IconButton(enabled = if (tree != null) tree.syncState == app.t4l.data.LocalSyncState.SYNCED &&
+                                state.categories.none { it.categoryTreeId == tree.id && it.syncState != app.t4l.data.LocalSyncState.SYNCED }
+                                else palette?.syncState == app.t4l.data.LocalSyncState.SYNCED,
+                                onClick = { if (tree != null) purgeTreeId = tree.id else purgePaletteId = palette?.id }) {
+                                Icon(Icons.Filled.DeleteForever, contentDescription = stringResource(R.string.delete_permanently))
+                            }
+                        }
+                        DenseRowDivider()
+                    }
+                }
+            } else BoxWithConstraints(Modifier.fillMaxSize()) {
+                val density = LocalDensity.current
+                val availableHeight = (maxHeight - 28.dp).coerceAtLeast(0.dp)
+                val availablePx = with(density) { availableHeight.toPx() }
+                val minimumPx = with(density) { 72.dp.toPx() }
+                val allFit = !editingPalette && paletteContentHeight > 0 && treeContentHeight > 0 &&
+                    paletteContentHeight + treeContentHeight <= availablePx
+                val requestedPx = if (allFit) paletteContentHeight.toFloat() else availablePx * splitFraction
+                val topPx = boundedSplitPx(requestedPx, availablePx, minimumPx, minimumPx)
+                val topHeight = with(density) { topPx.toDp() }
+                fun moveBoundary(delta: Float) {
+                    splitFraction = (boundedSplitPx(splitFraction * availablePx + delta, availablePx, minimumPx, minimumPx) / availablePx.coerceAtLeast(1f)).coerceIn(0.1f, 0.9f)
+                }
+                val saveSplit = { store.setCategorizationSplit(workspaceId, splitFraction) }
+                val paletteEdge = rememberEdgeBoundaryConnection(-1, !allFit, ::moveBoundary, saveSplit)
+                val treeEdge = rememberEdgeBoundaryConnection(1, !allFit, ::moveBoundary, saveSplit)
+                Column(Modifier.fillMaxSize()) {
+                    Box(Modifier.fillMaxWidth().height(topHeight).nestedScroll(paletteEdge).pointerInput(Unit) {
+                        awaitEachGesture { awaitFirstDown(requireUnconsumed = false); activePane = "palettes"; waitForUpOrCancellation() }
+                    }) {
+                        PaletteCollectionPane(state, vm, newPalette, activePane == "palettes", { newPalette = it }, { paletteContentHeight = it }, { editingPalette = it })
+                    }
+                    VerticalSplitHandle(!allFit, topPx / availablePx.coerceAtLeast(1f), stringResource(R.string.categorization_split),
+                        stringResource(R.string.expand_palettes), stringResource(R.string.expand_trees),
+                        onDrag = ::moveBoundary, onDragEnd = { store.setCategorizationSplit(workspaceId, splitFraction) },
+                        onStep = { step -> moveBoundary(availablePx * step); store.setCategorizationSplit(workspaceId, splitFraction) })
+                    Box(Modifier.fillMaxWidth().weight(1f).nestedScroll(treeEdge).pointerInput(Unit) {
+                        awaitEachGesture { awaitFirstDown(requireUnconsumed = false); activePane = "trees"; waitForUpOrCancellation() }
+                    }) {
+                        Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                            Column(Modifier.fillMaxWidth().onSizeChanged { treeContentHeight = it.height }) {
+                                Text(stringResource(R.string.trees_label), Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                                    style = MaterialTheme.typography.titleSmall,
+                                    color = if (activePane == "trees") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                                if (state.categoryTrees.isEmpty()) Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                                    Text(stringResource(R.string.no_category_trees))
+                                    TextButton(onClick = vm::createStarterData) { Text(stringResource(R.string.create_starter)) }
+                                }
+                                state.categoryTrees.forEach { tree ->
+                                    CategoryTreeListItem(
+                                        name = tree.name, revealed = revealedTreeId == tree.id,
+                                        onRevealed = { revealedTreeId = tree.id; actionBounds = null },
+                                        onCloseActions = { if (revealedTreeId == tree.id) closeActions() },
+                                        onOpen = { if (revealedTreeId != null) closeActions() else onOpenTree(tree.id) },
+                                        onRename = { closeActions(); renameTreeId = tree.id },
+                                        onColor = { closeActions(); colorTreeId = tree.id },
+                                        onDelete = { closeActions(); deleteTreeId = tree.id },
+                                        colorHex = state.treeAppearances.firstOrNull { it.categoryTreeId == tree.id }?.colorHex,
+                                        onActionBoundsChanged = { bounds -> if (revealedTreeId == tree.id) actionBounds = bounds },
+                                    )
+                                    DenseRowDivider()
+                                }
                             }
                         }
                     }
                 }
-            } else {
-            item {
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    IconButton(
-                        modifier = Modifier.size(48.dp),
-                        onClick = {
-                            if (revealedTreeId != null) closeActions()
-                            else newTree = true
-                        },
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = stringResource(R.string.create_category_tree))
-                    }
-                }
-            }
-            if (state.categoryTrees.isEmpty()) {
-                item {
-                    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Text(stringResource(R.string.no_category_trees))
-                        Button(onClick = vm::createStarterData) { Text(stringResource(R.string.create_starter)) }
-                    }
-                }
-            } else {
-                items(state.categoryTrees, key = { it.id }) { tree ->
-                    CategoryTreeListItem(
-                        name = tree.name,
-                        revealed = revealedTreeId == tree.id,
-                        onRevealed = {
-                            revealedTreeId = tree.id
-                            actionBounds = null
-                        },
-                        onCloseActions = { if (revealedTreeId == tree.id) closeActions() },
-                        onOpen = {
-                            if (revealedTreeId != null) closeActions()
-                            else onOpenTree(tree.id)
-                        },
-                        onRename = { closeActions(); renameTreeId = tree.id },
-                        onDelete = { closeActions(); deleteTreeId = tree.id },
-                        onActionBoundsChanged = { bounds -> if (revealedTreeId == tree.id) actionBounds = bounds },
-                    )
-                }
-            }
             }
         }
     }
@@ -507,6 +602,10 @@ private fun TrackScreen(state: DashboardState, vm: MainViewModel, padding: Paddi
         NameDialog(stringResource(R.string.rename), stringResource(R.string.category_tree_name), initial = tree.name, onDismiss = { renameTreeId = null }) {
             vm.renameCategoryTree(tree.id, it); renameTreeId = null
         }
+    }
+    colorTreeId?.let { treeId ->
+        val color = state.treeAppearances.firstOrNull { it.categoryTreeId == treeId }?.colorHex
+        HexColorDialog(color, { colorTreeId = null }) { selected -> selected?.let { vm.setTreeColor(treeId, it) }; colorTreeId = null }
     }
     deletedTree?.let { tree ->
         val categoryCount = state.categories.count { it.categoryTreeId == tree.id && !it.archived }
@@ -522,6 +621,18 @@ private fun TrackScreen(state: DashboardState, vm: MainViewModel, padding: Paddi
             vm.purgeCategoryTree(tree.id); purgeTreeId = null
         }
     }
+    state.trashedPalettes.firstOrNull { it.id == purgePaletteId }?.let { palette ->
+        ConfirmDialog(stringResource(R.string.purge_palette_confirmation), { purgePaletteId = null }) {
+            vm.purgePalette(palette.id); purgePaletteId = null
+        }
+    }
+}
+
+private data class DeletedCategorizationItem(
+    val tree: app.t4l.data.CategoryTreeRow? = null,
+    val palette: app.t4l.data.PaletteRow? = null,
+) {
+    val deletedAt: Long get() = tree?.trashedAtEpochMs ?: palette?.trashedAtEpochMs ?: 0L
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -534,7 +645,9 @@ internal fun CategoryTreeListItem(
     onOpen: () -> Unit,
     onRename: () -> Unit,
     onDelete: () -> Unit,
+    onColor: () -> Unit = {},
     onActionBoundsChanged: (Rect) -> Unit = {},
+    colorHex: String? = null,
 ) {
     var showContextMenu by rememberSaveable { mutableStateOf(false) }
     var localActionBounds by remember { mutableStateOf<Rect?>(null) }
@@ -585,7 +698,7 @@ internal fun CategoryTreeListItem(
                 }
             },
         ) {
-            Card(
+            Row(
                 Modifier.fillMaxWidth().heightIn(min = 56.dp).combinedClickable(
                     onClick = onOpen,
                     onLongClick = { showContextMenu = true },
@@ -596,14 +709,14 @@ internal fun CategoryTreeListItem(
                         CustomAccessibilityAction(renameLabel) { onRename(); true },
                         CustomAccessibilityAction(deleteLabel) { onDelete(); true },
                     )
-                },
+                }.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically,
             ) {
-                Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                }
+                colorHex?.let { Surface(Modifier.size(3.dp, 32.dp), color = hexToColor(it)) {} ; Spacer(Modifier.width(8.dp)) }
+                Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         DropdownMenu(expanded = showContextMenu, onDismissRequest = { showContextMenu = false }) {
+            DropdownMenuItem(text = { Text(stringResource(R.string.color_label)) }, onClick = { showContextMenu = false; onColor() })
             DropdownMenuItem(
                 text = { Text(stringResource(R.string.rename)) },
                 leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
@@ -1173,62 +1286,109 @@ private fun effectiveTaskCategory(id: String, tasks: List<TaskRow>): String? {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewModel, padding: PaddingValues, onOpenTask: (String) -> Unit) {
-    var hideRedundant by rememberSaveable { mutableStateOf(false) }
+    val workspaceId = vm.selectedWorkspace()
+    val uiStore = vm.timelineUiStore
+    var hideRedundant by remember(workspaceId) { mutableStateOf(uiStore.hideExtra(workspaceId, "history")) }
+    val panelState = rememberTimelinePanelState(workspaceId, "history", uiStore)
+    val paletteSelection = rememberPaletteSelection(workspaceId, null, uiStore)
+    var hiddenTreeIds by remember(workspaceId) { mutableStateOf(uiStore.hiddenTrees(workspaceId)) }
+    var hideTreeNames by remember(workspaceId) { mutableStateOf(uiStore.hideTreeNames(workspaceId)) }
     var adding by rememberSaveable { mutableStateOf(false) }; var editingId by rememberSaveable { mutableStateOf<String?>(null) }; var deletingId by rememberSaveable { mutableStateOf<String?>(null) }
-    var showDistribution by rememberSaveable { mutableStateOf(false) }
     var rangeStart by rememberSaveable { mutableStateOf("") }
     var rangeEnd by rememberSaveable { mutableStateOf("") }
     var capturedEnd by rememberSaveable { mutableStateOf<Long?>(null) }
-    val startDate = rangeStart.takeIf(String::isNotBlank)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
-    val endDate = rangeEnd.takeIf(String::isNotBlank)?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+    val from = rangeStart.takeIf(String::isNotBlank)?.let(::parseEpoch)
+    val selectedEnd = rangeEnd.takeIf(String::isNotBlank)?.let(::parseEpoch)
+    val now = System.currentTimeMillis()
+    val validStart = from != null && from <= now
+    val validEnd = rangeEnd.isBlank() || selectedEnd != null && selectedEnd > (from ?: Long.MAX_VALUE) && selectedEnd <= now
     val zone = ZoneId.systemDefault()
-    val from = startDate?.atStartOfDay(zone)?.toInstant()?.toEpochMilli()
-    val to = if (rangeEnd.isBlank()) capturedEnd else endDate?.plusDays(1)?.atStartOfDay(zone)?.toInstant()?.toEpochMilli()?.coerceAtMost(System.currentTimeMillis())
+    val to = if (rangeEnd.isBlank()) capturedEnd else selectedEnd
     val formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneId.systemDefault())
-    LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        item { ScreenHeading(R.string.history) }
-        item { Button(enabled = state.categories.isNotEmpty(), onClick = { adding = true }) { Text(stringResource(R.string.add_event)) } }
-        item { TextButton(onClick = { showDistribution = !showDistribution }) { Text(stringResource(R.string.show_time_distribution)) } }
-        if (showDistribution) item {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                DateField(rangeStart, stringResource(R.string.distribution_start), { rangeStart = it; capturedEnd = null }, invalid = rangeStart.isNotBlank() && startDate == null, presets = DatePresets.DISTRIBUTION_START)
-                DateField(rangeEnd, stringResource(R.string.distribution_end), { rangeEnd = it; capturedEnd = null }, optional = true, invalid = rangeEnd.isNotBlank() && endDate == null, presets = DatePresets.DISTRIBUTION_END)
-                if (rangeEnd.isBlank()) TextButton(enabled = startDate != null, onClick = { capturedEnd = System.currentTimeMillis() }) {
-                    if (capturedEnd != null) { Icon(Icons.Default.Refresh, contentDescription = null); Spacer(Modifier.width(4.dp)) }
-                    Text(stringResource(if (capturedEnd == null) R.string.calculate_distribution else R.string.refresh_distribution))
+    val listState = rememberLazyListState()
+    val visibleEvents = state.events.filter { it.categoryTreeId !in hiddenTreeIds }.sortedWith(compareBy<EventRow> { it.occurredAtEpochMs }.thenBy { it.id })
+    LaunchedEffect(workspaceId, state.events.isNotEmpty()) {
+        if (state.events.isNotEmpty()) {
+            delay(100)
+            listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
+    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+      val availableHeight = maxHeight
+      val panelDensity = LocalDensity.current
+      val panelEdge = rememberTimelineBoundaryConnection(!panelState.collapsed) { delta ->
+          with(panelDensity) {
+              uiStore.setPanelFraction(workspaceId, "history", adjustTimelinePanelFraction(panelState, delta, availableHeight.toPx(), 128.dp.toPx(), 72.dp.toPx()))
+          }
+      }
+      LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(panelEdge), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = 56.dp, bottom = timelinePanelHeight(availableHeight, panelState) + 8.dp)) {
+        visibleEvents.groupBy { timelineLocalDate(it.occurredAtEpochMs) }.forEach { (date, events) ->
+            stickyHeader(key = "history-date-$date") { TimelineDateHeader(date) }
+            items(events, key = { it.id }) { event ->
+                val tree = state.historicalCategoryTrees.firstOrNull { it.id == event.categoryTreeId }?.name.orEmpty()
+                val category = state.categories.firstOrNull { it.id == event.categoryId }?.name ?: stringResource(R.string.unknown)
+                val borderColor = state.treeAppearances.firstOrNull { it.categoryTreeId == event.categoryTreeId }?.colorHex?.let(::hexToColor) ?: Color.Gray
+                Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.width(3.dp).heightIn(min = 48.dp).background(borderColor))
+                    Column(Modifier.weight(1f).padding(start = 8.dp, top = 4.dp, bottom = 4.dp)) {
+                        Text(DateTimeFormatter.ofPattern("HH:mm").withZone(zone).format(Instant.ofEpochMilli(event.occurredAtEpochMs)), style = MaterialTheme.typography.titleSmall)
+                        Text(if (hideTreeNames) category else "$category ($tree)")
+                        EventTaskLink(event.taskId, tasks.tasks, onOpenTask)
+                    }
+                    IconButton(onClick = { editingId = event.id }) { Icon(Icons.Filled.Edit, contentDescription = stringResource(R.string.edit)) }
+                    IconButton(onClick = { deletingId = event.id }) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.delete)) }
                 }
-                if (from != null && to != null && to > from) {
-                    TextButton(onClick = { hideRedundant = !hideRedundant }) { Text(stringResource(if (hideRedundant) R.string.show_other_categories else R.string.hide_extra_categories)) }
-                    val activeTreeIds = state.categoryTrees.mapTo(mutableSetOf()) { it.id }
+                DenseRowDivider()
+            }
+        }
+      }
+      IconButton(enabled = state.categories.any { !it.archived && state.categoryTrees.any { tree -> tree.id == it.categoryTreeId } }, onClick = { adding = true }, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(48.dp).zIndex(2f)) {
+          Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_event))
+      }
+      TimelineBottomPanel(workspaceId, "history", availableHeight, uiStore, panelState, state.historicalCategoryTrees, hiddenTreeIds,
+          { hiddenTreeIds = it; uiStore.setHiddenTrees(workspaceId, it) }, hideTreeNames,
+          { hideTreeNames = it; uiStore.setHideTreeNames(workspaceId, it) }, distributionActions = {
+            if (rangeEnd.isBlank()) IconButton(enabled = validStart, onClick = { capturedEnd = System.currentTimeMillis() }) {
+                Icon(Icons.Filled.Refresh, contentDescription = stringResource(R.string.refresh_distribution))
+            }
+            IconButton(enabled = validStart && validEnd, onClick = { hideRedundant = !hideRedundant; uiStore.setHideExtra(workspaceId, "history", hideRedundant) }) {
+                Icon(Icons.Filled.FilterAlt, contentDescription = stringResource(if (hideRedundant) R.string.show_other_categories else R.string.hide_extra_categories),
+                    tint = if (hideRedundant) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+            }
+          }, paletteHeader = { TimelinePaletteHeader(state, paletteSelection) }, distribution = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    DateTimeField(rangeStart, stringResource(R.string.distribution_start), { value ->
+                        rangeStart = value
+                        capturedEnd = value.takeIf(String::isNotBlank)?.let(::parseEpoch)?.let { if (it <= System.currentTimeMillis()) System.currentTimeMillis() else null }
+                    }, Modifier.weight(1f), invalid = rangeStart.isNotBlank() && !validStart, compact = true)
+                    Text(" — ")
+                    DateTimeField(rangeEnd, stringResource(R.string.distribution_end), { value ->
+                        rangeEnd = value
+                        if (value.isBlank()) capturedEnd = System.currentTimeMillis()
+                    }, Modifier.weight(1f), optional = true, invalid = !validEnd, compact = true)
+                }
+                if (validStart && validEnd && to != null && to > from) {
+                    val activeTreeIds = state.categoryTrees.filter { it.id !in hiddenTreeIds }.mapTo(mutableSetOf()) { it.id }
                     val activeCategories = state.categories.filter { it.categoryTreeId in activeTreeIds && !it.archived }
                     val distribution = TimeEngine.distribution(
                         TimeEngine.intervals(state.events.filter { it.categoryTreeId in activeTreeIds }.map { EventPoint(it.id, it.categoryTreeId, it.categoryId, it.occurredAtEpochMs, it.taskId) }, from, to, to),
                         activeCategories.map { CategoryNode(it.id, it.categoryTreeId, it.parentId) },
                     ).associateBy { it.categoryId }
-                    state.categoryTrees.forEach { tree ->
+                    state.categoryTrees.filter { it.id !in hiddenTreeIds }.forEach { tree ->
                         Text(tree.name, style = MaterialTheme.typography.titleMedium)
                         val categories = activeCategories.filter { it.categoryTreeId == tree.id }
                         budgetCategoryItems(categories, emptyMap(), hideRedundant, distribution.mapNotNull { (id, value) -> id?.let { it to value.ownMillis } }.toMap()).forEach { (category, depth) ->
                             val value = distribution[category.id]
-                            Text("${"  ".repeat(depth)}${category.name}: ${stringResource(R.string.own_minutes)} ${formatDuration(value?.ownMillis ?: 0)}, Σ ${formatDuration(value?.totalMillis ?: 0)}")
+                            val own = formatDuration(value?.ownMillis ?: 0)
+                            val total = formatDuration(value?.totalMillis ?: 0)
+                            val description = "${category.name}: ${stringResource(R.string.own_minutes)} $own, ${stringResource(R.string.total_minutes)} $total"
+                            Text("${"  ".repeat(depth)}${category.name}: $own · Σ $total", modifier = Modifier.semantics { contentDescription = description })
                         }
                     }
                 }
             }
-        }
-        state.events.groupBy { timelineLocalDate(it.occurredAtEpochMs) }.forEach { (date, events) ->
-            stickyHeader(key = "history-date-$date") { TimelineDateHeader(date) }
-            items(events, key = { it.id }) { event ->
-                val tree = state.historicalCategoryTrees.firstOrNull { it.id == event.categoryTreeId }?.name.orEmpty()
-                val category = state.categories.firstOrNull { it.id == event.categoryId }?.name ?: stringResource(R.string.unknown)
-                Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(12.dp)) {
-                    Text(DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(event.occurredAtEpochMs)), style = MaterialTheme.typography.titleMedium)
-                    Text("$tree · $category")
-                    EventTaskLink(event.taskId, tasks.tasks, onOpenTask)
-                    Row { TextButton(onClick = { editingId = event.id }) { Text(stringResource(R.string.edit)) }; TextButton(onClick = { deletingId = event.id }) { Text(stringResource(R.string.delete)) } }
-                } }
-            }
-        }
+      }, palette = { TimelinePalette(state, tasks.tasks, vm, paletteSelection, hiddenTreeIds = hiddenTreeIds) }, modifier = Modifier.align(Alignment.BottomCenter))
     }
     if (adding) EventDialog(state, tasks.tasks, System.currentTimeMillis(), onDismiss = { adding = false }) { tree, category, task, at, done ->
         vm.addEvent(tree, category, at, task) { success -> done(success); if (success) adding = false }
@@ -1293,49 +1453,106 @@ private fun PlannerScreen(state: DashboardState, tasks: TaskState, planner: Plan
     var creating by rememberSaveable { mutableStateOf(false) }
     var showArchived by rememberSaveable { mutableStateOf(false) }
     var deletePlanId by rememberSaveable { mutableStateOf<String?>(null) }
-    var choosePlan by rememberSaveable { mutableStateOf(false) }
+    val workspaceId = vm.selectedWorkspace()
+    val uiStore = vm.timelineUiStore
+    var selectedPlanId by rememberSaveable(workspaceId) { mutableStateOf(uiStore.selectedPlan(workspaceId)) }
+    val panelState = rememberTimelinePanelState(workspaceId, "planner", uiStore)
+    var hiddenTreeIds by remember(workspaceId) { mutableStateOf(uiStore.hiddenTrees(workspaceId)) }
+    var hideTreeNames by remember(workspaceId) { mutableStateOf(uiStore.hideTreeNames(workspaceId)) }
+    var pendingCreatedId by rememberSaveable { mutableStateOf<String?>(null) }
+    var openedArchivedId by rememberSaveable { mutableStateOf<String?>(null) }
     var addingPlanId by rememberSaveable { mutableStateOf<String?>(null) }
     var editEventId by rememberSaveable { mutableStateOf<String?>(null) }
     var deleteEventId by rememberSaveable { mutableStateOf<String?>(null) }
     val validPlans = planner.plans.filter { it.endsAtEpochMs > it.startsAtEpochMs }
-    val displayedPlans = if (showArchived) planner.archivedPlans else planner.plans
-    Box(Modifier.fillMaxSize().padding(padding)) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 96.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            item { ScreenHeading(R.string.planner) }
-            item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { showArchived = false }, enabled = showArchived) { Text(stringResource(R.string.active_plans)) }
-                Button(onClick = { showArchived = true }, enabled = !showArchived) { Text(stringResource(R.string.archived_plans)) }
-            } }
-            if (!showArchived) item { Button(onClick = { creating = true }) { Text(stringResource(R.string.new_plan)) } }
-            displayedPlans.forEach { plan ->
-                stickyHeader(key = "plan-heading-${plan.id}") {
-                    Surface(color = MaterialTheme.colorScheme.surface) {
-                        Text(plan.name, Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), style = MaterialTheme.typography.titleMedium)
-                    }
+    val selectedPlan = if (showArchived) planner.archivedPlans.firstOrNull { it.id == openedArchivedId }
+        else planner.plans.firstOrNull { it.id == selectedPlanId }
+    val paletteSelection = rememberPaletteSelection(workspaceId, selectedPlan?.id, uiStore)
+    var hideRedundant by remember(workspaceId, selectedPlan?.id) {
+        mutableStateOf(selectedPlan?.let { uiStore.hideExtra(workspaceId, "plan.${it.id}") } ?: false)
+    }
+    LaunchedEffect(selectedPlanId, planner.loaded, planner.plans.map { it.id }) {
+        if (pendingCreatedId != null && planner.plans.any { it.id == pendingCreatedId }) pendingCreatedId = null
+        if (planner.loaded && selectedPlanId != null && selectedPlanId != pendingCreatedId && planner.plans.none { it.id == selectedPlanId }) {
+            selectedPlanId = null
+            uiStore.selectPlan(workspaceId, null)
+        }
+    }
+    BackHandler(selectedPlan != null) {
+        selectedPlanId = null; openedArchivedId = null; uiStore.selectPlan(workspaceId, null)
+    }
+    val listState = rememberLazyListState()
+    LaunchedEffect(selectedPlan?.id) {
+        if (selectedPlan != null) {
+            withTimeoutOrNull(1000) {
+                kotlinx.coroutines.delay(100)
+                listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+            }
+        }
+    }
+    val periodFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneId.systemDefault())
+    BoxWithConstraints(Modifier.fillMaxSize().padding(padding)) {
+        val availableHeight = maxHeight
+        val panelDensity = LocalDensity.current
+        val panelEdge = rememberTimelineBoundaryConnection(selectedPlan != null && !panelState.collapsed) { delta ->
+            with(panelDensity) {
+                uiStore.setPanelFraction(workspaceId, "planner", adjustTimelinePanelFraction(panelState, delta, availableHeight.toPx(), 128.dp.toPx(), 72.dp.toPx()))
+            }
+        }
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().nestedScroll(panelEdge), contentPadding = PaddingValues(start = 8.dp, end = 8.dp, top = if (selectedPlan == null) 8.dp else 56.dp,
+            bottom = if (selectedPlan == null) 8.dp else timelinePanelHeight(availableHeight, panelState) + 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (selectedPlan == null) {
+                item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { showArchived = false; openedArchivedId = null }, enabled = showArchived) { Text(stringResource(R.string.active_plans)) }
+                    Button(onClick = { showArchived = true; openedArchivedId = null }, enabled = !showArchived) { Text(stringResource(R.string.archived_plans)) }
+                } }
+                if (!showArchived) item { Button(onClick = { creating = true }) { Text(stringResource(R.string.new_plan)) } }
+                val displayedPlans = if (showArchived) planner.archivedPlans else planner.plans
+                items(displayedPlans, key = { "plan-choice-${it.id}" }) { plan ->
+                    Card(Modifier.fillMaxWidth().clickable {
+                        if (showArchived) openedArchivedId = plan.id
+                        else { selectedPlanId = plan.id; uiStore.selectPlan(workspaceId, plan.id) }
+                    }) { Column(Modifier.padding(16.dp)) {
+                        Text(plan.name, style = MaterialTheme.typography.titleMedium)
+                        Text("${periodFormatter.format(Instant.ofEpochMilli(plan.startsAtEpochMs))} — ${periodFormatter.format(Instant.ofEpochMilli(plan.endsAtEpochMs))}")
+                    } }
                 }
-                item(key = "plan-${plan.id}") {
-                    PlanCard(plan, state, planner, vm, readOnly = showArchived, onDeleteArchived = { deletePlanId = plan.id })
+                if (displayedPlans.isEmpty()) item { Text(stringResource(if (showArchived) R.string.no_archived_plans else R.string.no_plans)) }
+            } else {
+                item { TextButton(onClick = { selectedPlanId = null; openedArchivedId = null; uiStore.selectPlan(workspaceId, null) }) { Text("‹ ${stringResource(R.string.planner)}") } }
+                item(key = "plan-${selectedPlan.id}") {
+                    PlanCard(selectedPlan, state, planner, vm, readOnly = showArchived, onDeleteArchived = { deletePlanId = selectedPlan.id })
                 }
-                planner.plannedEvents.filter { it.planId == plan.id }.groupBy { timelineLocalDate(it.occurredAtEpochMs) }.forEach { (date, events) ->
-                    stickyHeader(key = "plan-date-${plan.id}-$date") { TimelineDateHeader(date, plan.name) }
+                planner.plannedEvents.filter { it.planId == selectedPlan.id && it.categoryTreeId !in hiddenTreeIds }.groupBy { timelineLocalDate(it.occurredAtEpochMs) }.forEach { (date, events) ->
+                    stickyHeader(key = "plan-date-${selectedPlan.id}-$date") { TimelineDateHeader(date, selectedPlan.name) }
                     items(events, key = { "plan-event-${it.id}" }) { event ->
-                        PlannedEventItem(event, plan, state, tasks.tasks, showArchived, onOpenTask,
+                        PlannedEventItem(event, selectedPlan, state, tasks.tasks, showArchived, onOpenTask, hideTreeNames,
                             onEdit = { editEventId = event.id }, onDelete = { deleteEventId = event.id })
                     }
                 }
             }
-            if (displayedPlans.isEmpty()) item { Text(stringResource(if (showArchived) R.string.no_archived_plans else R.string.no_plans)) }
         }
-        if (!showArchived) Button(enabled = validPlans.isNotEmpty() && state.categories.any { category -> !category.archived && state.categoryTrees.any { tree -> tree.id == category.categoryTreeId } }, onClick = { choosePlan = true },
-            modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp)) { Text(stringResource(R.string.add_planned_event)) }
+        if (selectedPlan != null && !showArchived) IconButton(enabled = selectedPlan.endsAtEpochMs > selectedPlan.startsAtEpochMs && state.categories.any { category -> !category.archived && state.categoryTrees.any { tree -> tree.id == category.categoryTreeId } }, onClick = { addingPlanId = selectedPlan.id },
+            modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(48.dp).zIndex(2f)) { Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_event)) }
+        if (selectedPlan != null) TimelineBottomPanel(workspaceId, "planner", availableHeight, uiStore, panelState, state.historicalCategoryTrees,
+            hiddenTreeIds, { hiddenTreeIds = it; uiStore.setHiddenTrees(workspaceId, it) }, hideTreeNames,
+            { hideTreeNames = it; uiStore.setHideTreeNames(workspaceId, it) },
+            distributionLabel = R.string.budget,
+            distributionActions = {
+                IconButton(onClick = { hideRedundant = !hideRedundant; uiStore.setHideExtra(workspaceId, "plan.${selectedPlan.id}", hideRedundant) }) {
+                    Icon(Icons.Filled.FilterAlt, contentDescription = stringResource(if (hideRedundant) R.string.show_other_categories else R.string.hide_extra_categories),
+                        tint = if (hideRedundant) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                }
+            },
+            paletteHeader = { if (!showArchived) TimelinePaletteHeader(state, paletteSelection) },
+            distribution = { PlanBudgetContent(selectedPlan, state, planner, vm, showArchived, hiddenTreeIds, hideRedundant) },
+            palette = if (showArchived) null else { { TimelinePalette(state, tasks.tasks, vm, paletteSelection, selectedPlan, hiddenTreeIds) } },
+            modifier = Modifier.align(Alignment.BottomCenter))
     }
-    if (creating) PlanDialog({ creating = false }) { name, start, end -> vm.createPlan(name, start, end); creating = false }
-    if (choosePlan) AlertDialog(onDismissRequest = { choosePlan = false }, title = { Text(stringResource(R.string.choose_plan)) },
-        text = { Column(Modifier.verticalScroll(rememberScrollState())) {
-            validPlans.forEach { plan -> TextButton(onClick = { addingPlanId = plan.id; choosePlan = false }) {
-                Text("${plan.name} · ${DateTimeFormatter.ofPattern("dd.MM HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(plan.startsAtEpochMs))}")
-            } }
-        } }, confirmButton = {}, dismissButton = { TextButton(onClick = { choosePlan = false }) { Text(stringResource(R.string.cancel)) } })
+    if (creating) PlanDialog({ creating = false }) { name, start, end ->
+        vm.createPlan(name, start, end) { id -> pendingCreatedId = id; selectedPlanId = id; uiStore.selectPlan(workspaceId, id) }
+        creating = false
+    }
     validPlans.firstOrNull { it.id == addingPlanId }?.let { plan ->
         EventDialog(state, tasks.tasks, plan.startsAtEpochMs, plan.startsAtEpochMs..(plan.endsAtEpochMs - 1), onDismiss = { addingPlanId = null }) { tree, category, task, at, done ->
             vm.addPlannedEvent(plan.id, tree, category, at, task) { success -> done(success); if (success) addingPlanId = null }
@@ -1365,18 +1582,10 @@ private fun PlannerScreen(state: DashboardState, tasks: TaskState, planner: Plan
 
 @Composable
 private fun PlanCard(plan: PlanRow, state: DashboardState, planner: PlannerState, vm: MainViewModel, readOnly: Boolean = false, onDeleteArchived: () -> Unit = {}) {
-    var confirmArchive by rememberSaveable(plan.id) { mutableStateOf(false) }; var hideRedundant by rememberSaveable(plan.id) { mutableStateOf(false) }; var repairing by rememberSaveable(plan.id) { mutableStateOf(false) }
-    var budgetExpanded by rememberSaveable(plan.id) { mutableStateOf(planner.allocations.any { it.planId == plan.id }) }
+    var confirmArchive by rememberSaveable(plan.id) { mutableStateOf(false) }; var repairing by rememberSaveable(plan.id) { mutableStateOf(false) }
     val formatter = DateTimeFormatter.ofPattern("dd.MM HH:mm").withZone(ZoneId.systemDefault())
     val validPeriod = plan.endsAtEpochMs > plan.startsAtEpochMs
-    val planEvents = planner.plannedEvents.filter { it.planId == plan.id }
-    val timeline = TimeEngine.plannedDistribution(
-        planEvents.map { EventPoint(it.id, it.categoryTreeId, it.categoryId, it.occurredAtEpochMs, it.taskId) },
-        state.categories.map { CategoryNode(it.id, it.categoryTreeId, it.parentId) },
-        plan.startsAtEpochMs,
-        plan.endsAtEpochMs,
-    )?.associateBy { it.categoryId }
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(plan.name, style = MaterialTheme.typography.titleLarge)
             if (!readOnly) TextButton(onClick = { confirmArchive = true }) { Text(stringResource(R.string.archive)) }
@@ -1390,42 +1599,60 @@ private fun PlanCard(plan: PlanRow, state: DashboardState, planner: PlannerState
             Text(stringResource(R.string.invalid_plan_period), color = MaterialTheme.colorScheme.error)
             if (!readOnly) TextButton(onClick = { repairing = true }) { Text(stringResource(R.string.repair_plan_period)) }
         }
-        TextButton(onClick = { budgetExpanded = !budgetExpanded }) { Text("${stringResource(R.string.budget)} ${if (budgetExpanded) "▾" else "▸"}", style = MaterialTheme.typography.titleMedium) }
-        if (budgetExpanded) {
-            TextButton(onClick = { hideRedundant = !hideRedundant }) { Text(stringResource(if (hideRedundant) R.string.show_other_categories else R.string.hide_extra_categories)) }
-            (if (readOnly) state.historicalCategoryTrees else state.categoryTrees).forEach { tree ->
-                Text(tree.name, style = MaterialTheme.typography.titleMedium)
-                val categories = state.categories.filter { it.categoryTreeId == tree.id && (readOnly || !it.archived) }; val own = planner.allocations.filter { it.planId == plan.id }.associate { it.categoryId to it.ownMinutes }
-                val rows = budgetCategoryItems(categories, own, hideRedundant, timeline?.mapNotNull { (id, value) -> id?.let { it to value.ownMillis } }?.toMap() ?: emptyMap())
-                if (rows.isEmpty()) Text(stringResource(R.string.no_budget_categories), style = MaterialTheme.typography.bodySmall)
-                rows.forEach { (category, depth) -> BudgetRow(category, depth, own[category.id], totalMinutes(category.id, categories, own), timeline?.get(category.id)?.ownMillis ?: if (validPeriod) 0 else null, timeline?.get(category.id)?.totalMillis ?: if (validPeriod) 0 else null, validPeriod && !readOnly) { vm.setBudget(plan.id, category.id, it) } }
-            }
-        }
         Text(stringResource(R.string.timeline_plan), style = MaterialTheme.typography.titleMedium)
-    } }
+    }
     if (!readOnly && repairing) PlanPeriodDialog(plan, { repairing = false }) { start, end -> vm.updatePlanPeriod(plan.id, start, end) { success -> if (success) repairing = false } }
     if (!readOnly && confirmArchive) ConfirmDialog(stringResource(R.string.archive_plan_message, plan.name), { confirmArchive = false }) { vm.archivePlan(plan.id); confirmArchive = false }
 }
 
 @Composable
+private fun PlanBudgetContent(plan: PlanRow, state: DashboardState, planner: PlannerState, vm: MainViewModel,
+    readOnly: Boolean, hiddenTreeIds: Set<String>, hideRedundant: Boolean) {
+    val validPeriod = plan.endsAtEpochMs > plan.startsAtEpochMs
+    val timeline = TimeEngine.plannedDistribution(
+        planner.plannedEvents.filter { it.planId == plan.id }.map { EventPoint(it.id, it.categoryTreeId, it.categoryId, it.occurredAtEpochMs, it.taskId) },
+        state.categories.map { CategoryNode(it.id, it.categoryTreeId, it.parentId) }, plan.startsAtEpochMs, plan.endsAtEpochMs,
+    )?.associateBy { it.categoryId }
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        (if (readOnly) state.historicalCategoryTrees else state.categoryTrees).filter { it.id !in hiddenTreeIds }.forEach { tree ->
+            Text(tree.name, style = MaterialTheme.typography.titleMedium)
+            val categories = state.categories.filter { it.categoryTreeId == tree.id && (readOnly || !it.archived) }
+            val own = planner.allocations.filter { it.planId == plan.id }.associate { it.categoryId to it.ownMinutes }
+            val rows = budgetCategoryItems(categories, own, hideRedundant, timeline?.mapNotNull { (id, value) -> id?.let { it to value.ownMillis } }?.toMap() ?: emptyMap())
+            if (rows.isEmpty()) Text(stringResource(R.string.no_budget_categories), style = MaterialTheme.typography.bodySmall)
+            rows.forEach { (category, depth) -> BudgetRow(category, depth, own[category.id], totalMinutes(category.id, categories, own),
+                timeline?.get(category.id)?.ownMillis ?: if (validPeriod) 0 else null,
+                timeline?.get(category.id)?.totalMillis ?: if (validPeriod) 0 else null, validPeriod && !readOnly) {
+                vm.setBudget(plan.id, category.id, it)
+            } }
+        }
+    }
+}
+
+@Composable
 private fun PlannedEventItem(event: app.t4l.data.PlannedEventRow, plan: PlanRow, state: DashboardState, tasks: List<TaskRow>, readOnly: Boolean,
-    onOpenTask: (String) -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+    onOpenTask: (String) -> Unit, hideTreeNames: Boolean, onEdit: () -> Unit, onDelete: () -> Unit) {
     val tree = state.historicalCategoryTrees.firstOrNull { it.id == event.categoryTreeId }?.name.orEmpty()
     val category = state.categories.firstOrNull { it.id == event.categoryId }?.name ?: stringResource(R.string.unknown)
     val validPeriod = plan.endsAtEpochMs > plan.startsAtEpochMs
     val withinPeriod = validPeriod && event.occurredAtEpochMs >= plan.startsAtEpochMs && event.occurredAtEpochMs < plan.endsAtEpochMs
-    Card(Modifier.fillMaxWidth()) { Row(Modifier.padding(12.dp)) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+    val borderColor = state.treeAppearances.firstOrNull { it.categoryTreeId == event.categoryTreeId }?.colorHex?.let(::hexToColor) ?: Color.Gray
+    Column {
+      Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.width(3.dp).heightIn(min = 48.dp).background(borderColor))
+        Column(Modifier.weight(1f).padding(start = 8.dp, top = 4.dp, bottom = 4.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(Instant.ofEpochMilli(event.occurredAtEpochMs)), style = MaterialTheme.typography.titleMedium)
-            Text("$tree · $category")
+            Text(if (hideTreeNames) category else "$category ($tree)")
             EventTaskLink(event.taskId, tasks, onOpenTask)
             if (validPeriod && !withinPeriod) Text(stringResource(R.string.planned_event_outside_period), color = MaterialTheme.colorScheme.error)
         }
-        if (!readOnly) Column {
-            TextButton(enabled = validPeriod, onClick = onEdit) { Text(stringResource(R.string.edit)) }
-            TextButton(enabled = validPeriod, onClick = onDelete) { Text(stringResource(R.string.delete)) }
+        if (!readOnly) Row {
+            IconButton(enabled = validPeriod, onClick = onEdit) { Icon(Icons.Filled.Edit, contentDescription = stringResource(R.string.edit)) }
+            IconButton(enabled = validPeriod, onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.delete)) }
         }
-    } }
+      }
+      DenseRowDivider()
+    }
 }
 
 @Composable
@@ -1514,8 +1741,7 @@ private fun TasksScreen(state: DashboardState, taskState: TaskState, settings: T
         }?.key
     }
     Box(Modifier.fillMaxSize().padding(padding).clickable(enabled = revealedId != null) { revealedId = null }) {
-        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            item { ScreenHeading(R.string.tasks) }
+        LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)) {
             item {
                 TaskListToolbar(
                     settings = settings,
@@ -1711,7 +1937,7 @@ internal fun TaskListRow(
                 }
             },
         ) {
-            Card(
+            Column(
                 Modifier.fillMaxWidth().then(if (dropTarget) Modifier.background(MaterialTheme.colorScheme.primaryContainer) else Modifier)
                     .semantics {
                         customActions = listOf(
@@ -1781,6 +2007,7 @@ internal fun TaskListRow(
         }
         if (dragging) Surface(Modifier.matchParentSize(), color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)) {}
     }
+    DenseRowDivider()
 }
 
 @Composable
@@ -2018,7 +2245,6 @@ private fun TaskDialog(state: DashboardState, parentTaskId: String?, existing: T
 @Composable
 private fun ReportsScreen(state: DashboardState, vm: MainViewModel, padding: PaddingValues) {
     LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(16.dp)) {
-        item { ScreenHeading(R.string.reports) }
         items(vm.reportToday()) { row ->
         val tree = state.categoryTrees.firstOrNull { it.id == row.categoryTreeId }?.name.orEmpty(); val category = state.categories.firstOrNull { it.id == row.categoryId }?.name ?: stringResource(R.string.unknown)
         Text("$tree · $category — ${row.seconds / 60} ${stringResource(R.string.minutes_short)}", Modifier.padding(vertical = 8.dp))
@@ -2032,13 +2258,40 @@ private fun NameDialog(title: String, label: String, initial: String = "", onDis
 @Composable
 private fun SettingsRoot(padding: PaddingValues, navigate: (Screen) -> Unit) {
     Column(Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        ScreenHeading(R.string.settings)
+        SettingsButton(R.string.home_screen) { navigate(Screen.HOME_SETTINGS) }
         SettingsButton(R.string.network) { navigate(Screen.NETWORK) }
-        SettingsButton(R.string.pomodoro_timer) { navigate(Screen.TIMER_SETTINGS) }
+        SettingsButton(R.string.tomato_timer_settings) { navigate(Screen.TIMER_SETTINGS) }
         SettingsButton(R.string.backup) { navigate(Screen.BACKUP) }
         SettingsButton(R.string.security) { navigate(Screen.SECURITY) }
         SettingsButton(R.string.diagnostics) { navigate(Screen.DIAGNOSTICS) }
         SettingsButton(R.string.language) { navigate(Screen.LANGUAGE) }
+    }
+}
+
+@Composable
+internal fun HomeDestinationSettingsScreen(selected: HomeDestination, onSelect: (HomeDestination) -> Unit, padding: PaddingValues) {
+    Column(
+        Modifier.fillMaxSize().padding(padding).verticalScroll(rememberScrollState()).padding(24.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        ScreenHeading(R.string.home_screen)
+        Text(stringResource(R.string.home_screen_current, stringResource(selected.label)))
+        Column(Modifier.selectableGroup()) {
+            HomeDestination.entries.forEach { destination ->
+                Row(
+                    Modifier.fillMaxWidth().heightIn(min = 48.dp).selectable(
+                        selected = destination == selected,
+                        role = Role.RadioButton,
+                        onClick = { onSelect(destination) },
+                    ),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    RadioButton(selected = destination == selected, onClick = null)
+                    Text(stringResource(destination.label))
+                }
+            }
+        }
     }
 }
 

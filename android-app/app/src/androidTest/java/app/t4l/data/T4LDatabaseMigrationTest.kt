@@ -149,6 +149,22 @@ class T4LDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate9To10KeepsTimelineAndAddsPalettes() {
+        helper.createDatabase(TEST_DB_V10, 9).apply {
+            execSQL("INSERT INTO plans (id,workspaceId,name,startsAtEpochMs,endsAtEpochMs,zoneId,archived,revision,updatedAtEpochMs,syncState) VALUES ('plan','workspace','Day',1000,2000,'UTC',0,1,1000,'SYNCED')")
+            close()
+        }
+        helper.runMigrationsAndValidate(TEST_DB_V10, 10, true, T4LDatabase.MIGRATION_9_10).use { db ->
+            db.query("SELECT name FROM plans WHERE id='plan'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals("Day", cursor.getString(0))
+            }
+            db.execSQL("INSERT INTO palettes (id,workspaceId,name,categoryColorsJson,itemOrderJson,archived,revision,updatedAtEpochMs,syncState) VALUES ('palette','workspace','Default','{}','[]',0,0,1000,'PENDING')")
+            db.execSQL("INSERT INTO tree_appearances (id,workspaceId,categoryTreeId,colorHex,revision,updatedAtEpochMs,syncState) VALUES ('tree','workspace','tree','#1976D2',0,1000,'PENDING')")
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
         const val TEST_DB_V4 = "migration-test-v4"
@@ -157,5 +173,6 @@ class T4LDatabaseMigrationTest {
         const val TEST_DB_V7 = "migration-test-v7"
         const val TEST_DB_V8 = "migration-test-v8"
         const val TEST_DB_V9 = "migration-test-v9"
+        const val TEST_DB_V10 = "migration-test-v10"
     }
 }

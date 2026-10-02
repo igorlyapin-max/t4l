@@ -20,6 +20,8 @@ internal suspend fun applyApiChange(dao: T4LDao, defaultWorkspace: String, chang
     val deleted = p.instant("deletedAt")
     when (change.entityType.lowercase()) {
         "categorytree" -> dao.putCategoryTree(CategoryTreeRow(change.entityId, workspace, p.text("name").orEmpty(), p.text("role") ?: "standard", p.int("sortOrder"), p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED, p.instant("trashedAt"), p.instant("purgedAt")))
+        "treeappearance" -> dao.putTreeAppearance(TreeAppearanceRow(change.entityId, workspace, p.text("categoryTreeId").orEmpty(), p.text("colorHex") ?: "#808080", change.revision, updated, deleted, LocalSyncState.SYNCED))
+        "palette" -> dao.putPalette(PaletteRow(change.entityId, workspace, p.text("name").orEmpty(), p.text("categoryColorsJson") ?: "{}", p.text("itemOrderJson") ?: "[]", p.bool("archived"), p.instant("trashedAt"), p.instant("purgedAt"), change.revision, updated, deleted, LocalSyncState.SYNCED))
         "category" -> dao.putCategories(listOf(CategoryRow(change.entityId, workspace, p.text("categoryTreeId").orEmpty(), p.text("parentId"), p.text("name").orEmpty(), p.text("loadType") ?: "light", p.int("sortOrder"), p.bool("archived"), change.revision, updated, deleted, LocalSyncState.SYNCED)))
         "event" -> dao.putEvent(EventRow(change.entityId, workspace, p.text("categoryTreeId").orEmpty(), p.text("categoryId"), p.text("taskId"), p.instant("occurredAt") ?: 0, p.text("zoneId") ?: "UTC", p.text("source") ?: "manual", p.text("note"), change.revision, updated, deleted, LocalSyncState.SYNCED))
         "task" -> dao.putTask(TaskRow(change.entityId, workspace, p.text("title").orEmpty(), p.text("categoryId"), p.text("parentTaskId"), p.int("estimateMinutes"), p.instant("deadline"), p.text("nextActionDate")?.let(LocalDate::parse)?.toEpochDay(), p.text("nextActionTime")?.let(LocalTime::parse)?.let { it.hour * 60 + it.minute }, p.text("zoneId") ?: "UTC", p.int("value"), p.text("energy") ?: "medium", p.int("progress"), p.text("status") ?: "active", p.bool("splittable"), p.int("sortOrder"), change.revision, updated, deleted, LocalSyncState.SYNCED))
@@ -38,6 +40,8 @@ internal suspend fun applyApiChange(dao: T4LDao, defaultWorkspace: String, chang
 internal suspend fun deleteLocalEntity(dao: T4LDao, entityType: String, entityId: String) {
     when (entityType.lowercase()) {
         "categorytree" -> dao.hardDeleteCategoryTree(entityId)
+        "treeappearance" -> dao.hardDeleteTreeAppearance(entityId)
+        "palette" -> dao.hardDeletePalette(entityId)
         "category" -> dao.hardDeleteCategory(entityId)
         "event" -> dao.hardDeleteEvent(entityId)
         "task" -> dao.hardDeleteTask(entityId)

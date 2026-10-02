@@ -18,6 +18,12 @@ interface T4LDao {
     fun observeTrashedCategoryTrees(workspaceId: String): Flow<List<CategoryTreeRow>>
     @Query("SELECT * FROM category_trees WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL ORDER BY sortOrder,name")
     fun observeHistoricalCategoryTrees(workspaceId: String): Flow<List<CategoryTreeRow>>
+    @Query("SELECT * FROM tree_appearances WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL")
+    fun observeTreeAppearances(workspaceId: String): Flow<List<TreeAppearanceRow>>
+    @Query("SELECT * FROM palettes WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL AND archived=0 ORDER BY name,id")
+    fun observePalettes(workspaceId: String): Flow<List<PaletteRow>>
+    @Query("SELECT * FROM palettes WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL AND archived=1 AND purgedAtEpochMs IS NULL ORDER BY trashedAtEpochMs DESC")
+    fun observeTrashedPalettes(workspaceId: String): Flow<List<PaletteRow>>
     @Query("SELECT * FROM categories WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL ORDER BY categoryTreeId,sortOrder,name")
     fun observeCategories(workspaceId: String): Flow<List<CategoryRow>>
     @Query("SELECT * FROM events WHERE workspaceId=:workspaceId AND deletedAtEpochMs IS NULL ORDER BY occurredAtEpochMs DESC")
@@ -42,6 +48,8 @@ interface T4LDao {
     suspend fun categoryTreeCount(workspaceId: String): Int
 
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putCategoryTree(row: CategoryTreeRow)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putTreeAppearance(row: TreeAppearanceRow)
+    @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putPalette(row: PaletteRow)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putCategories(rows: List<CategoryRow>)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putEvent(row: EventRow)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putTask(row: TaskRow)
@@ -87,6 +95,8 @@ interface T4LDao {
     @Query("DELETE FROM user_profiles WHERE userId=:userId") suspend fun deleteProfile(userId: String)
 
     @Query("SELECT * FROM category_trees WHERE id=:id") suspend fun categoryTree(id: String): CategoryTreeRow?
+    @Query("SELECT * FROM tree_appearances WHERE id=:id") suspend fun treeAppearance(id: String): TreeAppearanceRow?
+    @Query("SELECT * FROM palettes WHERE id=:id") suspend fun palette(id: String): PaletteRow?
     @Query("SELECT * FROM categories WHERE id=:id") suspend fun category(id: String): CategoryRow?
     @Query("SELECT * FROM categories WHERE parentId=:parentId AND deletedAtEpochMs IS NULL") suspend fun children(parentId: String): List<CategoryRow>
     @Query("SELECT * FROM categories WHERE categoryTreeId=:treeId AND deletedAtEpochMs IS NULL") suspend fun categoriesInTree(treeId: String): List<CategoryRow>
@@ -104,6 +114,8 @@ interface T4LDao {
     @Query("SELECT * FROM budget_allocations WHERE planId=:planId AND categoryId=:categoryId LIMIT 1") suspend fun budgetAllocation(planId: String, categoryId: String): BudgetAllocationRow?
     @Query("SELECT * FROM planned_events WHERE id=:id") suspend fun plannedEvent(id: String): PlannedEventRow?
     @Query("DELETE FROM category_trees WHERE id=:id") suspend fun hardDeleteCategoryTree(id: String)
+    @Query("DELETE FROM tree_appearances WHERE id=:id") suspend fun hardDeleteTreeAppearance(id: String)
+    @Query("DELETE FROM palettes WHERE id=:id") suspend fun hardDeletePalette(id: String)
     @Query("DELETE FROM categories WHERE id=:id") suspend fun hardDeleteCategory(id: String)
     @Query("DELETE FROM events WHERE id=:id") suspend fun hardDeleteEvent(id: String)
     @Query("DELETE FROM tasks WHERE id=:id") suspend fun hardDeleteTask(id: String)
