@@ -15,6 +15,61 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class EventEditTest {
     @Test
+    fun archiveSubtreeIsOneGroupAndDependentTaskWaits() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val database = Room.inMemoryDatabaseBuilder(context, T4LDatabase::class.java).build()
+        try {
+            val identity = DeviceIdentity(context)
+            val workspace = identity.workspaceId
+            val dao = database.dao()
+            dao.putCategoryTree(CategoryTreeRow("tree", workspace, "Activity", updatedAtEpochMs = 1))
+            dao.putCategories(listOf(
+                CategoryRow("root", workspace, "tree", name = "Root", revision = 1, updatedAtEpochMs = 1),
+                CategoryRow("child", workspace, "tree", parentId = "root", name = "Child", revision = 1, updatedAtEpochMs = 1),
+            ))
+            dao.putTask(TaskRow("task", workspace, "Task", "child", estimateMinutes = 10,
+                nextActionDateEpochDay = 20, zoneId = "UTC", revision = 1, updatedAtEpochMs = 1))
+            val limited = T4LRepository(database, identity, SyncStateStore(), syncLimitProvider = { 1 })
+            assertTrue(runCatching { limited.archiveCategory("root", now = 1_000) }.isFailure)
+            assertEquals(false, dao.category("root")?.archived)
+            assertEquals(0, dao.pendingMutations(workspace).size)
+
+            T4LRepository(database, identity, SyncStateStore(), syncLimitProvider = { 2 }).archiveCategory("root", now = 2_000)
+            val group = dao.pendingMutations(workspace)
+            assertEquals(2, group.size)
+            val groupId = requireNotNull(group.first().atomicGroupId)
+            assertTrue(group.all { it.atomicGroupId == groupId && it.entityType == "category" })
+            assertEquals("paused", dao.task("task")?.status)
+            assertEquals(1, dao.pendingDependents(groupId).size)
+            assertEquals("task", dao.pendingDependents(groupId).single().entityType)
+        } finally { database.close() }
+    }
+
+    @Test
+    fun restoringArchivedChildRestoresOnlyItsAncestorPath() = runBlocking {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val database = Room.inMemoryDatabaseBuilder(context, T4LDatabase::class.java).build()
+        try {
+            val identity = DeviceIdentity(context)
+            val workspace = identity.workspaceId
+            val dao = database.dao()
+            dao.putCategoryTree(CategoryTreeRow("tree", workspace, "Activity", updatedAtEpochMs = 1))
+            dao.putCategories(listOf(
+                CategoryRow("root", workspace, "tree", name = "Root", archived = true, updatedAtEpochMs = 1, trashedAtEpochMs = 1),
+                CategoryRow("child", workspace, "tree", parentId = "root", name = "Child", archived = true, updatedAtEpochMs = 1, trashedAtEpochMs = 1),
+                CategoryRow("sibling", workspace, "tree", parentId = "root", name = "Sibling", archived = true, updatedAtEpochMs = 1, trashedAtEpochMs = 1),
+            ))
+            T4LRepository(database, identity, SyncStateStore()).restoreCategory("child", now = 2)
+            assertEquals(false, dao.category("root")?.archived)
+            assertEquals(false, dao.category("child")?.archived)
+            assertEquals(true, dao.category("sibling")?.archived)
+            val pending = dao.pendingMutations(workspace)
+            assertEquals(2, pending.size)
+            assertEquals(1, pending.map { it.atomicGroupId }.distinct().size)
+        } finally { database.close() }
+    }
+
+    @Test
     fun archivedTargetAllowsHistoricalPlannedTimeEditButNotNewReference() = runBlocking {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val database = Room.inMemoryDatabaseBuilder(context, T4LDatabase::class.java).build()
@@ -23,7 +78,7 @@ class EventEditTest {
             val workspace = identity.workspaceId
             val dao = database.dao()
             dao.putCategoryTree(CategoryTreeRow("tree", workspace, "Activity", archived = true, trashedAtEpochMs = 8_000, updatedAtEpochMs = 8_000))
-            dao.putCategories(listOf(CategoryRow("work", workspace, "tree", name = "Work", archived = true, updatedAtEpochMs = 8_000)))
+            dao.putCategories(listOf(CategoryRow("work", workspace, "tree", name = "Work", archived = true, updatedAtEpochMs = 8_000, trashedAtEpochMs = 8_000)))
             dao.putPlan(PlanRow("plan", workspace, "Day", 1_000, 5_000, "UTC", updatedAtEpochMs = 1))
             dao.putPlannedEvent(PlannedEventRow("event", workspace, "plan", "tree", "work", null, 2_000, updatedAtEpochMs = 1))
             val repository = T4LRepository(database, identity, SyncStateStore())
@@ -33,7 +88,7 @@ class EventEditTest {
             assertTrue(runCatching { repository.addPlannedEvent("plan", "tree", "work", 4_000, now = 10_000) }.isFailure)
             repository.restoreCategoryTree("tree", 11_000)
             assertEquals(true, dao.category("work")?.archived)
-            repository.restoreArchivedCategories("tree", 12_000)
+            repository.restoreCategory("work", 12_000)
             assertEquals(false, dao.category("work")?.archived)
         } finally { database.close() }
     }

@@ -16,7 +16,7 @@ services:
       - t4l-postgres:/var/lib/postgresql/data
 
   api:
-    image: ${T4L_API_IMAGE:-ghcr.io/igorlyapin-max/t4l-api:v00.00.00.06}
+    image: ${T4L_API_IMAGE:-ghcr.io/igorlyapin-max/t4l-api:v00.00.00.07}
     environment:
       ASPNETCORE_ENVIRONMENT: Production
       ASPNETCORE_URLS: http://+:8080
@@ -27,6 +27,7 @@ services:
       Observability__RequireExternalSink: "true"
       DebugLogging__Enabled: ${T4L_DEBUG_LOGGING_ENABLED:-false}
       DebugLogging__Level: ${T4L_DEBUG_LOGGING_LEVEL:-Basic}
+      Sync__MaxMutationsPerPush: ${T4L_SYNC_MAX_MUTATIONS_PER_PUSH:-100}
     ports:
       - "${T4L_API_BIND_ADDRESS:-127.0.0.1}:${T4L_API_PORT:-5099}:8080"
     depends_on:

@@ -1,8 +1,10 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Data;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using T4L.Api.Domain;
 using T4L.Api.Persistence;
 using T4L.Api.Security;
@@ -14,14 +16,18 @@ public sealed partial class SyncService(
     IHubContext<ChangeHub> hub,
     WorkspaceAccess workspaceAccess,
     TimeProvider timeProvider,
-    ILogger<SyncService> logger)
+    ILogger<SyncService> logger,
+    IConfiguration? configuration = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = CreateJsonOptions();
+    private int MaxMutationsPerPush => configuration?.GetValue<int?>("Sync:MaxMutationsPerPush") ?? 100;
     public async Task<PushResponse> PushAsync(PushRequest request, CancellationToken cancellationToken)
     {
-        if (request.Mutations.Count is < 1 or > 100)
+        if (MaxMutationsPerPush is < 1 or > 1000)
+            throw new InvalidOperationException("Sync:MaxMutationsPerPush must be between 1 and 1000.");
+        if (request.Mutations.Count < 1 || request.Mutations.Count > MaxMutationsPerPush)
         {
-            throw new ArgumentException("A sync batch must contain between 1 and 100 mutations.");
+            throw new ArgumentException($"A sync batch must contain between 1 and {MaxMutationsPerPush} mutations.");
         }
 
         var results = new List<MutationResult>(request.Mutations.Count);
@@ -59,6 +65,10 @@ public sealed partial class SyncService(
             .Select(x => x.EntityId).Distinct().ToArray();
         var canonicalTrees = await db.CategoryTrees.AsNoTracking().Where(x => treeIds.Contains(x.Id))
             .ToDictionaryAsync(x => x.Id, cancellationToken);
+        var categoryIds = visible.Where(x => !x.Deleted && x.EntityType.Equals("category", StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.EntityId).Distinct().ToArray();
+        var canonicalCategories = await db.Categories.AsNoTracking().Where(x => categoryIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, cancellationToken);
         var changes = visible.Select(x =>
         {
             var payload = JsonNode.Parse(x.PayloadJson)!.AsObject();
@@ -69,6 +79,14 @@ public sealed partial class SyncService(
                     payload["trashedAt"] = trashedAt.ToString("O");
                 if (!payload.ContainsKey("purgedAt") && canonicalTree.PurgedAt is { } purgedAt)
                     payload["purgedAt"] = purgedAt.ToString("O");
+            }
+            if (!x.Deleted && x.EntityType.Equals("category", StringComparison.OrdinalIgnoreCase) &&
+                canonicalCategories.TryGetValue(x.EntityId, out var canonicalCategory))
+            {
+                if (!payload.ContainsKey("trashedAt") && canonicalCategory.TrashedAt is { } categoryTrashedAt)
+                    payload["trashedAt"] = categoryTrashedAt.ToString("O");
+                if (!payload.ContainsKey("purgedAt") && canonicalCategory.PurgedAt is { } categoryPurgedAt)
+                    payload["purgedAt"] = categoryPurgedAt.ToString("O");
             }
             if (!x.Deleted && x.EntityType.Equals("plan", StringComparison.OrdinalIgnoreCase) &&
                 (!TryPlanPeriod(payload, out var start, out var end) || end <= start) &&
@@ -90,7 +108,7 @@ public sealed partial class SyncService(
         return validStart && validEnd;
     }
 
-    private async Task<MutationResult> ApplyAsync(MutationDto mutation, CancellationToken cancellationToken, bool atomicTaskTransition = false, bool validatedClosure = false)
+    private async Task<MutationResult> ApplyAsync(MutationDto mutation, CancellationToken cancellationToken, bool atomicTaskTransition = false, bool validatedClosure = false, bool atomicCategoryGroup = false)
     {
         var actor = await workspaceAccess.RequireAsync(mutation.WorkspaceId, MembershipRole.Editor, cancellationToken);
         if (mutation.EntityType.Equals("taskComment", StringComparison.OrdinalIgnoreCase) &&
@@ -98,7 +116,7 @@ public sealed partial class SyncService(
             RequiredPayload<TaskCommentEntity>(mutation).AuthorId != actor.UserId)
             return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "comment_author_mismatch");
 
-        var validationError = validatedClosure ? null : await ValidateMutationAsync(mutation, cancellationToken, atomicTaskTransition);
+        var validationError = validatedClosure ? null : await ValidateMutationAsync(mutation, cancellationToken, atomicTaskTransition, atomicCategoryGroup);
         if (validationError is not null)
         {
             return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: validationError);
@@ -120,7 +138,7 @@ public sealed partial class SyncService(
         };
     }
 
-    private async Task<string?> ValidateMutationAsync(MutationDto mutation, CancellationToken cancellationToken, bool atomicTaskTransition = false)
+    private async Task<string?> ValidateMutationAsync(MutationDto mutation, CancellationToken cancellationToken, bool atomicTaskTransition = false, bool atomicCategoryGroup = false)
     {
         if (!mutation.Operation.Equals("upsert", StringComparison.OrdinalIgnoreCase)) return null;
         try
@@ -155,6 +173,8 @@ public sealed partial class SyncService(
                                 (previousIds.Contains(x.Id) || tree.DeletedAt == null && !tree.Archived && tree.PurgedAt == null)))
                         .Select(x => x.Id).ToArrayAsync(cancellationToken);
                     if (existingCategories.Length != categoryIds.Length) return "palette_category_not_found";
+                    if (!await AreCategoriesUsableAsync(categoryIds.Where(x => !previousIds.Contains(x)), mutation.WorkspaceId, cancellationToken))
+                        return "palette_category_not_found";
                     var taskIds = contents.TaskIds.ToArray();
                     var existingTaskIds = await db.Tasks.AsNoTracking()
                         .Where(x => taskIds.Contains(x.Id) && x.WorkspaceId == mutation.WorkspaceId)
@@ -166,6 +186,8 @@ public sealed partial class SyncService(
                 {
                     var item = RequiredPayload<CategoryEntity>(mutation);
                     if (string.IsNullOrWhiteSpace(item.Name) || item.Name.Length > 120) return "invalid_category_name";
+                    if (item.Archived && !atomicCategoryGroup && await db.Categories.AnyAsync(x => x.ParentId == mutation.EntityId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null, cancellationToken))
+                        return "atomic_group_required";
                     if (!await db.CategoryTrees.AnyAsync(x => x.Id == item.CategoryTreeId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && !x.Archived && x.PurgedAt == null, cancellationToken)) return "category_tree_not_found";
                     if (item.ParentId == mutation.EntityId) return "category_cycle";
                     var parent = item.ParentId;
@@ -187,6 +209,7 @@ public sealed partial class SyncService(
                     var activeTargetRequired = !historicalTarget || item.TaskId is not null && item.TaskId != previous!.TaskId;
                     if (!await db.CategoryTrees.AnyAsync(x => x.Id == item.CategoryTreeId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && (!activeTargetRequired || !x.Archived && x.PurgedAt == null), cancellationToken)) return "category_tree_not_found";
                     if (item.CategoryId is { } categoryId && !await db.Categories.AnyAsync(x => x.Id == categoryId && x.WorkspaceId == mutation.WorkspaceId && x.CategoryTreeId == item.CategoryTreeId && x.DeletedAt == null && (!activeTargetRequired || !x.Archived), cancellationToken)) return "invalid_event_category";
+                    if (activeTargetRequired && item.CategoryId is { } activeEventCategory && !await IsCategoryUsableAsync(activeEventCategory, mutation.WorkspaceId, cancellationToken)) return "invalid_event_category";
                     if (item.TaskId is { } taskId && await EffectiveCategoryAsync(taskId, mutation.WorkspaceId, cancellationToken) != item.CategoryId) return "event_task_category_mismatch";
                     if (item.OccurredAt > timeProvider.GetUtcNow()) return "factual_event_in_future";
                     if (item.Note?.Length > 2000) return "event_note_too_long";
@@ -206,11 +229,13 @@ public sealed partial class SyncService(
                     {
                         var unchangedCategory = existingTask?.CategoryId == categoryId;
                         if (!await db.Categories.AnyAsync(x => x.Id == categoryId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && (unchangedCategory || !x.Archived) && db.CategoryTrees.Any(tree => tree.Id == x.CategoryTreeId && tree.WorkspaceId == mutation.WorkspaceId && tree.DeletedAt == null && (unchangedCategory || !tree.Archived && tree.PurgedAt == null)), cancellationToken)) return "task_category_not_found";
+                        if (!unchangedCategory && !await IsCategoryUsableAsync(categoryId, mutation.WorkspaceId, cancellationToken)) return "task_category_not_found";
                     }
                     if (item.ParentTaskId is { } newParentId && existingTask?.ParentTaskId != newParentId)
                     {
                         var effectiveId = await EffectiveCategoryAsync(newParentId, mutation.WorkspaceId, cancellationToken);
                         if (effectiveId is null || !await db.Categories.AnyAsync(x => x.Id == effectiveId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && !x.Archived && db.CategoryTrees.Any(tree => tree.Id == x.CategoryTreeId && tree.WorkspaceId == mutation.WorkspaceId && tree.DeletedAt == null && !tree.Archived && tree.PurgedAt == null), cancellationToken)) return "task_category_not_found";
+                        if (!await IsCategoryUsableAsync(effectiveId.Value, mutation.WorkspaceId, cancellationToken)) return "task_category_not_found";
                     }
                     var parent = item.ParentTaskId;
                     var visited = new HashSet<Guid> { mutation.EntityId };
@@ -241,6 +266,7 @@ public sealed partial class SyncService(
                     var item = RequiredPayload<BudgetAllocationEntity>(mutation);
                     if (item.OwnMinutes < 0 || !await db.Plans.AnyAsync(x => x.Id == item.PlanId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && !x.Archived, cancellationToken)) return "invalid_budget_allocation";
                     if (!await db.Categories.AnyAsync(x => x.Id == item.CategoryId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && !x.Archived && db.CategoryTrees.Any(tree => tree.Id == x.CategoryTreeId && tree.WorkspaceId == mutation.WorkspaceId && tree.DeletedAt == null && !tree.Archived && tree.PurgedAt == null), cancellationToken)) return "budget_category_not_found";
+                    if (!await IsCategoryUsableAsync(item.CategoryId, mutation.WorkspaceId, cancellationToken)) return "budget_category_not_found";
                     break;
                 }
                 case "plannedevent":
@@ -253,6 +279,7 @@ public sealed partial class SyncService(
                     var activeTargetRequired = !historicalTarget || item.TaskId is not null && item.TaskId != previous!.TaskId;
                     if (!await db.CategoryTrees.AnyAsync(x => x.Id == item.CategoryTreeId && x.WorkspaceId == mutation.WorkspaceId && x.DeletedAt == null && (!activeTargetRequired || !x.Archived && x.PurgedAt == null), cancellationToken)) return "category_tree_not_found";
                     if (item.CategoryId is { } plannedCategoryId && !await db.Categories.AnyAsync(x => x.Id == plannedCategoryId && x.WorkspaceId == mutation.WorkspaceId && x.CategoryTreeId == item.CategoryTreeId && x.DeletedAt == null && (!activeTargetRequired || !x.Archived), cancellationToken)) return "invalid_planned_category";
+                    if (activeTargetRequired && item.CategoryId is { } activePlannedCategory && !await IsCategoryUsableAsync(activePlannedCategory, mutation.WorkspaceId, cancellationToken)) return "invalid_planned_category";
                     if (item.TaskId is { } taskId && await EffectiveCategoryAsync(taskId, mutation.WorkspaceId, cancellationToken) != item.CategoryId) return "planned_task_category_mismatch";
                     if (item.Note?.Length > 2000) return "planned_event_note_too_long";
                     break;
@@ -268,6 +295,50 @@ public sealed partial class SyncService(
 
     private static TEntity RequiredPayload<TEntity>(MutationDto mutation) where TEntity : SyncEntity =>
         mutation.Payload.Deserialize<TEntity>(JsonOptions) ?? throw new JsonException("Payload is required.");
+
+    private async Task<bool> IsCategoryUsableAsync(Guid categoryId, Guid workspaceId, CancellationToken ct)
+    {
+        var visited = new HashSet<Guid>();
+        Guid? cursor = categoryId;
+        Guid? treeId = null;
+        while (cursor is { } id)
+        {
+            if (!visited.Add(id)) return false;
+            var row = await db.Categories.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.WorkspaceId == workspaceId && x.DeletedAt == null, ct);
+            if (row is null || row.Archived || row.PurgedAt is not null || treeId is not null && row.CategoryTreeId != treeId) return false;
+            treeId = row.CategoryTreeId;
+            cursor = row.ParentId;
+        }
+        return treeId is { } tid && await db.CategoryTrees.AnyAsync(x => x.Id == tid && x.WorkspaceId == workspaceId && x.DeletedAt == null && !x.Archived && x.PurgedAt == null, ct);
+    }
+
+    private async Task<bool> AreCategoriesUsableAsync(IEnumerable<Guid> categoryIds, Guid workspaceId, CancellationToken ct)
+    {
+        var roots = categoryIds.ToHashSet();
+        if (roots.Count == 0) return true;
+        var loaded = new Dictionary<Guid, CategoryEntity>();
+        var frontier = roots;
+        while (frontier.Count > 0)
+        {
+            var batch = await db.Categories.AsNoTracking().Where(x => x.WorkspaceId == workspaceId && frontier.Contains(x.Id) && x.DeletedAt == null).ToArrayAsync(ct);
+            if (batch.Length != frontier.Count || batch.Any(x => x.Archived || x.PurgedAt is not null)) return false;
+            foreach (var row in batch) loaded[row.Id] = row;
+            frontier = batch.Where(x => x.ParentId is not null).Select(x => x.ParentId!.Value)
+                .Where(x => !loaded.ContainsKey(x)).ToHashSet();
+        }
+        foreach (var id in roots)
+        {
+            var visited = new HashSet<Guid>();
+            var current = loaded[id];
+            while (current.ParentId is { } parentId)
+            {
+                if (!visited.Add(current.Id) || !loaded.TryGetValue(parentId, out var parent) || parent.CategoryTreeId != current.CategoryTreeId) return false;
+                current = parent;
+            }
+        }
+        var treeIds = loaded.Values.Select(x => x.CategoryTreeId).Distinct().ToArray();
+        return await db.CategoryTrees.AsNoTracking().CountAsync(x => treeIds.Contains(x.Id) && x.WorkspaceId == workspaceId && x.DeletedAt == null && !x.Archived && x.PurgedAt == null, ct) == treeIds.Length;
+    }
 
     private async Task<Guid?> EffectiveCategoryAsync(Guid taskId, Guid workspaceId, CancellationToken cancellationToken)
     {
@@ -327,6 +398,8 @@ public sealed partial class SyncService(
 
     private async Task<IReadOnlyList<MutationResult>> ProcessAtomicGroupAsync(Guid clientId, MutationDto[] group, CancellationToken ct)
     {
+        if (group.All(x => x.EntityType.Equals("category", StringComparison.OrdinalIgnoreCase)))
+            return await ProcessCategoryGroupAsync(clientId, group, ct);
         var ordered = group.OrderBy(x => x.EntityType.Equals("task", StringComparison.OrdinalIgnoreCase) ? 0 : 1).ToArray();
         var taskMutation = ordered.FirstOrDefault();
         if (group.Length is < 1 or > 2 || taskMutation is null || !taskMutation.EntityType.Equals("task", StringComparison.OrdinalIgnoreCase) ||
@@ -399,6 +472,83 @@ public sealed partial class SyncService(
             await transaction.RollbackAsync(ct);
             db.ChangeTracker.Clear();
             return group.Select(x => new MutationResult(x.ClientMutationId, "conflict", ErrorCode: "concurrent_update")).ToArray();
+        }
+    }
+
+    private async Task<IReadOnlyList<MutationResult>> ProcessCategoryGroupAsync(Guid clientId, MutationDto[] group, CancellationToken ct)
+    {
+        if (group.Length < 1 || group.Length > MaxMutationsPerPush || group.Select(x => x.ClientMutationId).Distinct().Count() != group.Length ||
+            group.Select(x => x.EntityId).Distinct().Count() != group.Length ||
+            group.Any(x => x.WorkspaceId != group[0].WorkspaceId || !x.Operation.Equals("upsert", StringComparison.OrdinalIgnoreCase)))
+            return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "invalid_atomic_group")).ToArray();
+        var ids = group.Select(x => x.ClientMutationId).ToArray();
+        var stored = await db.ProcessedMutations.AsNoTracking()
+            .Where(x => x.ClientId == clientId && x.WorkspaceId == group[0].WorkspaceId && ids.Contains(x.ClientMutationId))
+            .ToArrayAsync(ct);
+        if (stored.Length == group.Length)
+            return group.Select(x => JsonSerializer.Deserialize<MutationResult>(stored.Single(s => s.ClientMutationId == x.ClientMutationId).ResultJson, JsonOptions)! with { Duplicate = true }).ToArray();
+        if (stored.Length != 0)
+            return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "partial_atomic_group_retry")).ToArray();
+
+        await workspaceAccess.RequireAsync(group[0].WorkspaceId, MembershipRole.Editor, ct);
+        await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
+        CategoryEntity[] requested;
+        try { requested = group.Select(RequiredPayload<CategoryEntity>).ToArray(); }
+        catch (JsonException) { return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "invalid_payload")).ToArray(); }
+        if (requested.Select(x => x.Archived).Distinct().Count() != 1 ||
+            requested.Select(x => x.CategoryTreeId).Distinct().Count() != 1)
+            return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "invalid_category_group")).ToArray();
+        var archiving = requested[0].Archived;
+        if (archiving)
+        {
+            var groupIds = group.Select(x => x.EntityId).ToHashSet();
+            var current = await db.Categories.AsNoTracking().Where(x => x.WorkspaceId == group[0].WorkspaceId && x.DeletedAt == null).ToArrayAsync(ct);
+            // Every server-side descendant of an archived node must be included in this transaction.
+            var descendants = current.Where(x => x.ParentId is { } parent && groupIds.Contains(parent)).Select(x => x.Id).ToArray();
+            if (descendants.Any(x => !groupIds.Contains(x)) ||
+                requested.Where(x => x.ParentId is { } parent && groupIds.Contains(parent)).Count() != group.Length - 1)
+                return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "incomplete_category_archive_group")).ToArray();
+        }
+        try
+        {
+            var applied = new List<MutationResult>(group.Length);
+            foreach (var mutation in group)
+            {
+                var category = RequiredPayload<CategoryEntity>(mutation);
+                if (category.Archived != archiving)
+                {
+                    await transaction.RollbackAsync(ct); db.ChangeTracker.Clear();
+                    return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "invalid_category_group")).ToArray();
+                }
+                var result = await ApplyAsync(mutation, ct, atomicCategoryGroup: true);
+                if (result.Status != "applied")
+                {
+                    await transaction.RollbackAsync(ct); db.ChangeTracker.Clear();
+                    return group.Select(x => x.ClientMutationId == result.ClientMutationId ? result :
+                        new MutationResult(x.ClientMutationId, result.Status, ErrorCode: "atomic_group_aborted")).ToArray();
+                }
+                AddProcessedMutation(clientId, mutation, result);
+                await db.SaveChangesAsync(ct);
+                applied.Add(result);
+            }
+            await transaction.CommitAsync(ct);
+            foreach (var (mutation, result) in group.Zip(applied)) await NotifyWorkspaceAsync(mutation, result, ct);
+            return applied;
+        }
+        catch (DbUpdateException)
+        {
+            await transaction.RollbackAsync(ct); db.ChangeTracker.Clear();
+            return group.Select(x => new MutationResult(x.ClientMutationId, "conflict", ErrorCode: "category_group_race")).ToArray();
+        }
+        catch (PostgresException exception) when (exception.SqlState == PostgresErrorCodes.SerializationFailure)
+        {
+            await transaction.RollbackAsync(ct); db.ChangeTracker.Clear();
+            return group.Select(x => new MutationResult(x.ClientMutationId, "conflict", ErrorCode: "category_group_race")).ToArray();
+        }
+        catch (JsonException)
+        {
+            await transaction.RollbackAsync(ct); db.ChangeTracker.Clear();
+            return group.Select(x => new MutationResult(x.ClientMutationId, "rejected", ErrorCode: "invalid_payload")).ToArray();
         }
     }
 
@@ -528,6 +678,7 @@ public sealed partial class SyncService(
             var paletteWasArchived = priorPalette?.Archived == true;
             var previousPaletteTrashedAt = priorPalette?.TrashedAt;
             var previousPalettePurgedAt = priorPalette?.PurgedAt;
+            var priorCategory = existing as CategoryEntity;
             if (incoming is CategoryTreeEntity incomingTree)
             {
                 if (previousPurgedAt is not null)
@@ -542,6 +693,13 @@ public sealed partial class SyncService(
                 if (paletteWasArchived && !incomingPalette.Archived && previousPaletteTrashedAt is { } trashedAt && now >= trashedAt.AddDays(30))
                     return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "palette_retention_expired");
             }
+            if (incoming is CategoryEntity incomingCategory)
+            {
+                if (priorCategory?.PurgedAt is not null)
+                    return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "category_purged");
+                if (priorCategory?.Archived == true && !incomingCategory.Archived && priorCategory.TrashedAt is { } categoryTrashedAt && now >= categoryTrashedAt.AddHours(48))
+                    return new MutationResult(mutation.ClientMutationId, "rejected", ErrorCode: "category_retention_expired");
+            }
             CopyMutableProperties(incoming, entity);
             if (entity is CategoryTreeEntity tree)
             {
@@ -552,6 +710,11 @@ public sealed partial class SyncService(
             {
                 palette.TrashedAt = palette.Archived ? previousPaletteTrashedAt ?? now : null;
                 palette.PurgedAt = null;
+            }
+            if (entity is CategoryEntity category)
+            {
+                category.TrashedAt = category.Archived ? priorCategory?.TrashedAt ?? now : null;
+                category.PurgedAt = null;
             }
             entity.DeletedAt = null;
             if (existing is null) set.Add(entity);

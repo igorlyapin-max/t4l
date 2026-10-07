@@ -76,8 +76,10 @@ internal fun TimelineBottomPanel(
     distributionLabel: Int = R.string.distribution_label,
     distributionActions: @Composable () -> Unit = {},
     paletteHeader: @Composable () -> Unit = {},
+    localSettings: @Composable () -> Unit = {},
     distribution: @Composable () -> Unit,
     palette: (@Composable () -> Unit)? = null,
+    allowContentSwipe: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
     var tab by rememberSaveable(workspaceId, screenKey) { mutableIntStateOf(0) }
@@ -126,7 +128,8 @@ internal fun TimelineBottomPanel(
             }
             if (!panelState.collapsed) {
                 HorizontalDivider()
-                Box(Modifier.fillMaxSize().pointerInput(tab, tabs) {
+                Box(Modifier.fillMaxSize().pointerInput(tab, tabs, allowContentSwipe) {
+                    if (!allowContentSwipe && tab == 1) return@pointerInput
                     var swipeDistance = 0f
                     detectHorizontalDragGestures(
                         onHorizontalDrag = { change, amount -> swipeDistance += amount; change.consume() },
@@ -145,6 +148,7 @@ internal fun TimelineBottomPanel(
                         when (tab) {
                             0 -> distribution()
                             2 -> Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                localSettings()
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Checkbox(checked = hideTreeNames, onCheckedChange = onHideTreeNames)
                                     Text(stringResource(R.string.hide_tree_names))

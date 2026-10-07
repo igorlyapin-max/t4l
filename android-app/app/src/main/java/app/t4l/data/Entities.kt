@@ -50,6 +50,8 @@ data class PaletteRow(
     val updatedAtEpochMs: Long,
     val deletedAtEpochMs: Long? = null,
     val syncState: LocalSyncState = LocalSyncState.PENDING,
+    /** Stable rows and nullable cells; itemOrderJson remains a derived index. */
+    val rowsJson: String = "[]",
 )
 
 @Entity(tableName = "categories", indices = [Index("workspaceId"), Index("categoryTreeId"), Index("parentId")])
@@ -66,6 +68,8 @@ data class CategoryRow(
     val updatedAtEpochMs: Long,
     val deletedAtEpochMs: Long? = null,
     val syncState: LocalSyncState = LocalSyncState.PENDING,
+    val trashedAtEpochMs: Long? = null,
+    val purgedAtEpochMs: Long? = null,
 )
 
 @Entity(tableName = "events", indices = [Index("workspaceId"), Index(value = ["categoryTreeId", "occurredAtEpochMs"])])
@@ -166,7 +170,7 @@ data class PlannedEventRow(
     val syncState: LocalSyncState = LocalSyncState.PENDING,
 )
 
-@Entity(tableName = "outbox", indices = [Index("workspaceId"), Index("createdAtEpochMs")])
+@Entity(tableName = "outbox", indices = [Index("workspaceId"), Index("createdAtEpochMs"), Index("atomicGroupId"), Index("dependsOnGroupId")])
 data class OutboxRow(
     @PrimaryKey val clientMutationId: String,
     val clientId: String,
@@ -180,6 +184,7 @@ data class OutboxRow(
     val attemptCount: Int = 0,
     val lastError: String? = null,
     val atomicGroupId: String? = null,
+    val dependsOnGroupId: String? = null,
 )
 
 @Entity(tableName = "sync_cursors")

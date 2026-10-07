@@ -86,6 +86,7 @@ public sealed class PaletteEntity : SyncEntity
     public string Name { get; set; } = "";
     public string CategoryColorsJson { get; set; } = "{}";
     public string ItemOrderJson { get; set; } = "[]";
+    public string RowsJson { get; set; } = "[]";
     public bool Archived { get; set; }
     public DateTimeOffset? TrashedAt { get; set; }
     public DateTimeOffset? PurgedAt { get; set; }
@@ -99,6 +100,8 @@ public sealed class CategoryEntity : SyncEntity
     public LoadType LoadType { get; set; }
     public int SortOrder { get; set; }
     public bool Archived { get; set; }
+    public DateTimeOffset? TrashedAt { get; set; }
+    public DateTimeOffset? PurgedAt { get; set; }
 }
 
 public sealed class TimeEventEntity : SyncEntity

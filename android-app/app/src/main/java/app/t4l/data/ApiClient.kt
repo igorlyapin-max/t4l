@@ -49,7 +49,7 @@ data class ApiMutation(
 @Serializable data class ImportBody(val name: String, val snapshot: JsonObject)
 @Serializable data class ImportResponse(val workspaceId: String, val importedEntities: Int)
 @Serializable data class BootstrapWorkspace(val workspaceId: String, val name: String, val role: String)
-@Serializable data class BootstrapResponse(val userId: String, val defaultWorkspaceId: String, val workspaces: List<BootstrapWorkspace>)
+@Serializable data class BootstrapResponse(val userId: String, val defaultWorkspaceId: String, val workspaces: List<BootstrapWorkspace>, val syncMaxMutationsPerPush: Int = 100)
 @Serializable data class DiagnosticEventDto(
     val timestamp: String,
     val level: String,

@@ -90,6 +90,7 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
@@ -772,14 +773,13 @@ private fun CategoryTreeEditorScreen(treeId: String, state: DashboardState, vm: 
     }
     CategoryTreeEditor(
         name = tree.name,
-        categories = state.categories.filter { it.categoryTreeId == tree.id && !it.archived },
+        categories = state.categories.filter { it.categoryTreeId == tree.id && it.purgedAtEpochMs == null },
         padding = padding,
         onAdd = { parent, name -> vm.addCategory(tree.id, name, parent) },
         onMoveCategory = vm::moveCategory,
         onRenameCategory = { id, value -> vm.renameCategory(id, value) },
         onDeleteCategory = vm::archiveCategory,
-        archivedCount = state.categories.count { it.categoryTreeId == tree.id && it.archived && it.deletedAtEpochMs == null },
-        onRestoreArchived = { vm.restoreArchivedCategories(tree.id) },
+        onRestoreCategory = vm::restoreCategory,
     )
 }
 
@@ -794,10 +794,9 @@ internal fun CategoryTreeEditor(
     onMoveCategory: (String, CategoryPlacement) -> Unit,
     onRenameCategory: (String, String) -> Unit,
     onDeleteCategory: (String) -> Unit,
-    archivedCount: Int = 0,
-    onRestoreArchived: () -> Unit = {},
+    onRestoreCategory: (String) -> Unit = {},
 ) {
-    var confirmRestoreArchived by remember { mutableStateOf(false) }
+    var showArchived by rememberSaveable(name) { mutableStateOf(false) }
     var selectedCategoryId by rememberSaveable(name) { mutableStateOf<String?>(null) }
     var addParent by rememberSaveable { mutableStateOf<String?>(null) }; var addDialog by rememberSaveable { mutableStateOf(false) }
     var renameCategory by remember { mutableStateOf<CategoryRow?>(null) }
@@ -814,11 +813,12 @@ internal fun CategoryTreeEditor(
     val rowBounds = remember { mutableStateMapOf<String, Rect>() }
     val categoryNameBounds = remember { mutableStateMapOf<String, Rect>() }
     val collapsed = remember(collapsedValue) { collapsedValue.split(',').filter(String::isNotBlank).toSet() }
-    val flat = remember(categories, collapsed) { flattenVisibleCategories(categories, collapsed) }
-    val children = remember(categories) { categories.groupBy { it.parentId } }
-    val selectedCategory = categories.firstOrNull { it.id == selectedCategoryId }
-    val invalidDropIds = remember(categories, draggingCategoryId) {
-        draggingCategoryId?.let { descendantCategoryIds(categories, it) + it }.orEmpty()
+    val visibleCategories = remember(categories, showArchived) { categories.filter { showArchived || !it.archived } }
+    val flat = remember(visibleCategories, collapsed) { flattenVisibleCategories(visibleCategories, collapsed) }
+    val children = remember(visibleCategories) { visibleCategories.groupBy { it.parentId } }
+    val selectedCategory = visibleCategories.firstOrNull { it.id == selectedCategoryId }
+    val invalidDropIds = remember(visibleCategories, draggingCategoryId) {
+        draggingCategoryId?.let { descendantCategoryIds(visibleCategories, it) + it }.orEmpty()
     }
     val listState = rememberLazyListState()
     val edgePx = with(LocalDensity.current) { 72.dp.toPx() }
@@ -877,6 +877,10 @@ internal fun CategoryTreeEditor(
                     style = MaterialTheme.typography.titleLarge,
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp).clickable { selectedCategoryId = null }.padding(vertical = 8.dp),
                 )
+                IconButton(onClick = { showArchived = !showArchived }) {
+                    Icon(if (showArchived) Icons.Filled.Unarchive else Icons.Filled.Archive,
+                        contentDescription = stringResource(if (showArchived) R.string.hide_archived_categories else R.string.show_archived_categories))
+                }
                 IconButton(
                     modifier = Modifier.size(48.dp).onGloballyPositioned { addButtonBounds = it.boundsInRoot() },
                     onClick = {
@@ -891,9 +895,6 @@ internal fun CategoryTreeEditor(
                     )
                 }
             }
-            if (archivedCount > 0) TextButton(onClick = { confirmRestoreArchived = true }) {
-                Text(stringResource(R.string.restore_archived_categories, archivedCount))
-            }
             if (draggingCategoryId != null) {
                 Surface(
                     color = if (dropTarget?.placement == CategoryPlacement.Root) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
@@ -904,7 +905,7 @@ internal fun CategoryTreeEditor(
                     }
                 }
             }
-            if (categories.isEmpty()) Text(
+            if (visibleCategories.isEmpty()) Text(
                 stringResource(R.string.no_categories_in_tree),
                 modifier = Modifier.fillMaxWidth().clickable { selectedCategoryId = null }.padding(vertical = 16.dp),
             )
@@ -923,7 +924,7 @@ internal fun CategoryTreeEditor(
                         isCollapsed = isCollapsed,
                         selected = selectedCategoryId == category.id,
                         dragging = draggingCategoryId == category.id,
-                        validDropTarget = category.id !in invalidDropIds,
+                        validDropTarget = !category.archived && category.id !in invalidDropIds,
                         dropPlacement = dropTarget?.takeIf { it.categoryId == category.id }?.placement,
                         menuExpanded = actionsFor == category.id,
                         onBoundsChanged = { rowBounds[category.id] = it },
@@ -938,18 +939,21 @@ internal fun CategoryTreeEditor(
                             if (!next.add(category.id)) next.remove(category.id)
                             collapsedValue = next.sorted().joinToString(",")
                         },
-                        onSelect = { selectedCategoryId = category.id },
-                        onRename = { renameCategory = category },
+                        onSelect = { selectedCategoryId = category.id.takeUnless { category.archived } },
+                        onRename = { if (!category.archived) renameCategory = category },
                         onMenu = { selectedCategoryId = null; actionsFor = category.id },
                         onDismissMenu = { actionsFor = null },
                         onAddChild = { actionsFor = null; addParent = category.id; addDialog = true },
                         onMoveRequest = { actionsFor = null; moveCategory = category },
                         onDelete = { actionsFor = null; confirmCategory = category },
+                        onRestore = { actionsFor = null; onRestoreCategory(category.id) },
                         onDragStart = { position ->
-                            actionsFor = null
-                            selectedCategoryId = category.id
-                            draggingCategoryId = category.id
-                            updateDrop(position)
+                            if (!category.archived) {
+                                actionsFor = null
+                                selectedCategoryId = category.id
+                                draggingCategoryId = category.id
+                                updateDrop(position)
+                            }
                         },
                         onDrag = ::updateDrop,
                         onDragEnd = {
@@ -996,8 +1000,6 @@ internal fun CategoryTreeEditor(
     renameCategory?.let { category -> NameDialog(stringResource(R.string.rename), stringResource(R.string.category_name), initial = category.name, onDismiss = { renameCategory = null }) { onRenameCategory(category.id, it); renameCategory = null } }
     moveCategory?.let { category -> MoveCategoryDialog(category, categories, { moveCategory = null }) { placement -> onMoveCategory(category.id, placement); moveCategory = null } }
     confirmCategory?.let { category -> ConfirmDialog(stringResource(R.string.archive_category_message, category.name), { confirmCategory = null }) { onDeleteCategory(category.id); confirmCategory = null } }
-    if (confirmRestoreArchived) ConfirmDialog(stringResource(R.string.restore_archived_categories_message),
-        { confirmRestoreArchived = false }) { onRestoreArchived(); confirmRestoreArchived = false }
 }
 
 @Composable
@@ -1022,6 +1024,7 @@ private fun CategoryEditorRow(
     onAddChild: () -> Unit,
     onMoveRequest: () -> Unit,
     onDelete: () -> Unit,
+    onRestore: () -> Unit,
     onDragStart: (Offset) -> Unit,
     onDrag: (Offset) -> Unit,
     onDragEnd: () -> Unit,
@@ -1034,6 +1037,7 @@ private fun CategoryEditorRow(
     val containerColor = when {
         insideTarget -> MaterialTheme.colorScheme.primaryContainer
         selected -> MaterialTheme.colorScheme.secondaryContainer
+        category.archived -> MaterialTheme.colorScheme.surfaceVariant
         else -> MaterialTheme.colorScheme.surface
     }
     val expandDescription = "${category.name}: ${stringResource(if (isCollapsed) R.string.expand else R.string.collapse)}"
@@ -1042,6 +1046,8 @@ private fun CategoryEditorRow(
     val selectedState = stringResource(if (selected) R.string.category_selected else R.string.category_not_selected)
     val actionsDescription = stringResource(R.string.category_actions, category.name)
     val moveDescription = stringResource(R.string.move_category_named, category.name)
+    val archivedDescription = stringResource(R.string.field_archived)
+    val restoreDescription = stringResource(R.string.restore)
     Surface(
         color = containerColor,
         border = if (selected) BorderStroke(1.dp, MaterialTheme.colorScheme.primary) else null,
@@ -1072,14 +1078,16 @@ private fun CategoryEditorRow(
                     text = category.name,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
+                    color = if (category.archived) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f).heightIn(min = 48.dp)
                         .onGloballyPositioned { onNameBoundsChanged(it.boundsInRoot()) }
                         .combinedClickable(onClick = onSelect, onDoubleClick = onRename)
                         .padding(vertical = 13.dp, horizontal = 4.dp)
                         .semantics {
                             contentDescription = levelDescription
-                            stateDescription = selectedState
-                            customActions = listOf(CustomAccessibilityAction(moveDescription) { onMoveRequest(); true })
+                            stateDescription = if (category.archived) archivedDescription else selectedState
+                            customActions = if (category.archived) listOf(CustomAccessibilityAction(restoreDescription) { onRestore(); true })
+                                else listOf(CustomAccessibilityAction(moveDescription) { onMoveRequest(); true })
                         },
                 )
                 Box {
@@ -1087,6 +1095,9 @@ private fun CategoryEditorRow(
                         categoryId = category.id,
                         description = actionsDescription,
                         moveDescription = moveDescription,
+                        archived = category.archived,
+                        restoreDescription = restoreDescription,
+                        onRestore = onRestore,
                         onClick = onMenu,
                         onMoveRequest = onMoveRequest,
                         onDragStart = onDragStart,
@@ -1095,10 +1106,13 @@ private fun CategoryEditorRow(
                         onDragCancel = onDragCancel,
                     )
                     DropdownMenu(menuExpanded, onDismissMenu) {
-                        DropdownMenuItem(text = { Text(stringResource(R.string.add_category)) }, onClick = onAddChild)
-                        DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = onRename)
-                        DropdownMenuItem(text = { Text(stringResource(R.string.move_category)) }, onClick = onMoveRequest)
-                        DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = onDelete)
+                        if (category.archived) DropdownMenuItem(text = { Text(stringResource(R.string.restore)) }, onClick = onRestore)
+                        else {
+                            DropdownMenuItem(text = { Text(stringResource(R.string.add_category)) }, onClick = onAddChild)
+                            DropdownMenuItem(text = { Text(stringResource(R.string.rename)) }, onClick = onRename)
+                            DropdownMenuItem(text = { Text(stringResource(R.string.move_category)) }, onClick = onMoveRequest)
+                            DropdownMenuItem(text = { Text(stringResource(R.string.delete)) }, onClick = onDelete)
+                        }
                     }
                 }
             }
@@ -1116,6 +1130,9 @@ private fun CategoryActionButton(
     categoryId: String,
     description: String,
     moveDescription: String,
+    archived: Boolean,
+    restoreDescription: String,
+    onRestore: () -> Unit,
     onClick: () -> Unit,
     onMoveRequest: () -> Unit,
     onDragStart: (Offset) -> Unit,
@@ -1129,6 +1146,7 @@ private fun CategoryActionButton(
     val currentDrag by rememberUpdatedState(onDrag)
     val currentDragEnd by rememberUpdatedState(onDragEnd)
     val currentDragCancel by rememberUpdatedState(onDragCancel)
+    val currentRestore by rememberUpdatedState(onRestore)
     Surface(
         modifier = Modifier.size(48.dp).onGloballyPositioned { origin = it.positionInRoot() }
             .pointerInput(categoryId) {
@@ -1143,6 +1161,7 @@ private fun CategoryActionButton(
                         currentClick()
                         return@awaitEachGesture
                     }
+                    if (archived) { currentClick(); return@awaitEachGesture }
                     secondDown.consume()
                     currentDragStart(origin + secondDown.position)
                     var completed = false
@@ -1166,7 +1185,8 @@ private fun CategoryActionButton(
                 role = Role.Button
                 contentDescription = description
                 onClick { currentClick(); true }
-                customActions = listOf(CustomAccessibilityAction(moveDescription) { onMoveRequest(); true })
+                customActions = if (archived) listOf(CustomAccessibilityAction(restoreDescription) { currentRestore(); true })
+                    else listOf(CustomAccessibilityAction(moveDescription) { onMoveRequest(); true })
             },
         color = Color.Transparent,
     ) {
@@ -1297,7 +1317,8 @@ private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewM
     var rangeStart by rememberSaveable { mutableStateOf("") }
     var rangeEnd by rememberSaveable { mutableStateOf("") }
     var capturedEnd by rememberSaveable { mutableStateOf<Long?>(null) }
-    val from = rangeStart.takeIf(String::isNotBlank)?.let(::parseEpoch)
+    var exactStart by rememberSaveable { mutableStateOf<Long?>(null) }
+    val from = exactStart ?: rangeStart.takeIf(String::isNotBlank)?.let(::parseEpoch)
     val selectedEnd = rangeEnd.takeIf(String::isNotBlank)?.let(::parseEpoch)
     val now = System.currentTimeMillis()
     val validStart = from != null && from <= now
@@ -1307,9 +1328,21 @@ private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewM
     val formatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneId.systemDefault())
     val listState = rememberLazyListState()
     val visibleEvents = state.events.filter { it.categoryTreeId !in hiddenTreeIds }.sortedWith(compareBy<EventRow> { it.occurredAtEpochMs }.thenBy { it.id })
+    var followBottom by remember(workspaceId) { mutableStateOf(true) }
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }.collect { (scrolling, canScrollForward) ->
+            if (scrolling) followBottom = !canScrollForward
+        }
+    }
     LaunchedEffect(workspaceId, state.events.isNotEmpty()) {
         if (state.events.isNotEmpty()) {
             delay(100)
+            listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
+        }
+    }
+    LaunchedEffect(visibleEvents.map { it.id }) {
+        if (followBottom && visibleEvents.isNotEmpty()) {
+            delay(50)
             listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
         }
     }
@@ -1342,6 +1375,13 @@ private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewM
             }
         }
       }
+      if (rangeStart.isBlank()) TextButton(onClick = {
+          val tappedAt = System.currentTimeMillis()
+          exactStart = tappedAt
+          rangeStart = formatEpoch(tappedAt)
+          rangeEnd = ""
+          capturedEnd = maxOf(System.currentTimeMillis(), tappedAt + 1)
+      }, modifier = Modifier.align(Alignment.TopStart).padding(4.dp).zIndex(2f)) { Text(stringResource(R.string.start_now)) }
       IconButton(enabled = state.categories.any { !it.archived && state.categoryTrees.any { tree -> tree.id == it.categoryTreeId } }, onClick = { adding = true }, modifier = Modifier.align(Alignment.TopEnd).padding(4.dp).size(48.dp).zIndex(2f)) {
           Icon(Icons.Default.Add, contentDescription = stringResource(R.string.add_event))
       }
@@ -1360,6 +1400,7 @@ private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewM
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     DateTimeField(rangeStart, stringResource(R.string.distribution_start), { value ->
                         rangeStart = value
+                        exactStart = null
                         capturedEnd = value.takeIf(String::isNotBlank)?.let(::parseEpoch)?.let { if (it <= System.currentTimeMillis()) System.currentTimeMillis() else null }
                     }, Modifier.weight(1f), invalid = rangeStart.isNotBlank() && !validStart, compact = true)
                     Text(" — ")
@@ -1368,6 +1409,7 @@ private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewM
                         if (value.isBlank()) capturedEnd = System.currentTimeMillis()
                     }, Modifier.weight(1f), optional = true, invalid = !validEnd, compact = true)
                 }
+                exactStart?.let { Text(DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm:ss").withZone(zone).format(Instant.ofEpochMilli(it)), style = MaterialTheme.typography.bodySmall) }
                 if (validStart && validEnd && to != null && to > from) {
                     val activeTreeIds = state.categoryTrees.filter { it.id !in hiddenTreeIds }.mapTo(mutableSetOf()) { it.id }
                     val activeCategories = state.categories.filter { it.categoryTreeId in activeTreeIds && !it.archived }
@@ -1388,7 +1430,8 @@ private fun HistoryScreen(state: DashboardState, tasks: TaskState, vm: MainViewM
                     }
                 }
             }
-      }, palette = { TimelinePalette(state, tasks.tasks, vm, paletteSelection, hiddenTreeIds = hiddenTreeIds) }, modifier = Modifier.align(Alignment.BottomCenter))
+      }, palette = { TimelinePalette(state, tasks.tasks, vm, paletteSelection, hiddenTreeIds = hiddenTreeIds) },
+          allowContentSwipe = !paletteSelection.reorderMode, modifier = Modifier.align(Alignment.BottomCenter))
     }
     if (adding) EventDialog(state, tasks.tasks, System.currentTimeMillis(), onDismiss = { adding = false }) { tree, category, task, at, done ->
         vm.addEvent(tree, category, at, task) { success -> done(success); if (success) adding = false }
@@ -1482,12 +1525,24 @@ private fun PlannerScreen(state: DashboardState, tasks: TaskState, planner: Plan
         selectedPlanId = null; openedArchivedId = null; uiStore.selectPlan(workspaceId, null)
     }
     val listState = rememberLazyListState()
+    var followPlanBottom by remember(workspaceId, selectedPlan?.id) { mutableStateOf(true) }
+    LaunchedEffect(listState, selectedPlan?.id) {
+        snapshotFlow { listState.isScrollInProgress to listState.canScrollForward }.collect { (scrolling, canScrollForward) ->
+            if (scrolling) followPlanBottom = !canScrollForward
+        }
+    }
     LaunchedEffect(selectedPlan?.id) {
         if (selectedPlan != null) {
             withTimeoutOrNull(1000) {
                 kotlinx.coroutines.delay(100)
                 listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
             }
+        }
+    }
+    LaunchedEffect(selectedPlan?.id, planner.plannedEvents.filter { it.planId == selectedPlan?.id }.map { it.id }) {
+        if (selectedPlan != null && followPlanBottom) {
+            delay(50)
+            listState.scrollToItem((listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0))
         }
     }
     val periodFormatter = DateTimeFormatter.ofPattern("dd.MM.yyyy HH:mm").withZone(ZoneId.systemDefault())
@@ -1545,8 +1600,13 @@ private fun PlannerScreen(state: DashboardState, tasks: TaskState, planner: Plan
                 }
             },
             paletteHeader = { if (!showArchived) TimelinePaletteHeader(state, paletteSelection) },
+            localSettings = { if (!showArchived) Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = paletteSelection.useShared, onCheckedChange = paletteSelection::setShared)
+                Text(stringResource(R.string.use_shared_palette))
+            } },
             distribution = { PlanBudgetContent(selectedPlan, state, planner, vm, showArchived, hiddenTreeIds, hideRedundant) },
             palette = if (showArchived) null else { { TimelinePalette(state, tasks.tasks, vm, paletteSelection, selectedPlan, hiddenTreeIds) } },
+            allowContentSwipe = !paletteSelection.reorderMode,
             modifier = Modifier.align(Alignment.BottomCenter))
     }
     if (creating) PlanDialog({ creating = false }) { name, start, end ->

@@ -42,6 +42,14 @@ class ServerSettings(context: Context) {
     val baseUrl: String
         get() = preferences.getString(KEY_BASE_URL, null) ?: BuildConfig.API_BASE_URL
 
+    val syncMaxMutationsPerPush: Int
+        get() = preferences.getInt("sync_limit:$baseUrl", 100).coerceIn(1, 1000)
+
+    fun rememberSyncLimit(limit: Int) {
+        require(limit in 1..1000)
+        preferences.edit { putInt("sync_limit:$baseUrl", limit) }
+    }
+
     val syncDelay: SyncDelay
         get() = SyncDelay.entries.firstOrNull {
             it.seconds == preferences.getLong(KEY_SYNC_DELAY_SECONDS, DEFAULT_SYNC_DELAY.seconds)

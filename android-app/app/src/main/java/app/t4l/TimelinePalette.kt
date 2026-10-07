@@ -4,6 +4,7 @@ import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -20,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.DragHandle
 import androidx.compose.material3.AlertDialog
@@ -33,6 +35,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TimePicker
+import androidx.compose.material3.TimePickerSelectionMode
+import androidx.compose.material3.rememberTimePickerState
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -41,11 +47,21 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
@@ -57,6 +73,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.t4l.data.DashboardState
 import app.t4l.data.PaletteContents
+import app.t4l.data.PaletteLayoutRow
 import app.t4l.data.PlanRow
 import app.t4l.data.TaskRow
 import java.time.Instant
@@ -173,24 +190,35 @@ internal fun TimelinePalette(
     }
     val actions = availableCategories.map { PaletteAction("c:${it.id}", it.id, null, it.name) } +
         eligibleTasks.mapNotNull { task -> effectiveTaskCategoryForPalette(task, taskById)?.let { PaletteAction("t:${task.id}", it, task.id, task.title) } }
-    val fullOrder = (contents?.order.orEmpty() + actions.map { it.key }).distinct()
-    val sorted = actions.sortedWith(compareBy({ fullOrder.indexOf(it.key) }, { it.key }))
+    val actionByKey = actions.associateBy { it.key }
+    val missingTasks = eligibleTasks.map { "t:${it.id}" }.filterNot { it in contents?.order.orEmpty() }
+    LaunchedEffect(palette?.id, selection.reorderMode, missingTasks) {
+        if (selection.reorderMode && palette != null && missingTasks.isNotEmpty()) vm.ensurePaletteTaskRows(palette.id, missingTasks)
+    }
+    val displayedRows = contents?.rows.orEmpty() + missingTasks.map { key -> PaletteLayoutRow("dynamic:$key", listOf(key)) }
     var quickAction by remember { mutableStateOf<PaletteAction?>(null) }
-    var chosenTime by rememberSaveable { mutableStateOf("09:00") }
+    var quickSaving by remember { mutableStateOf(false) }
+    var quickError by remember { mutableStateOf(false) }
     var dateText by remember(effectiveDate) { mutableStateOf(effectiveDate.toString()) }
     var draggingKey by remember(palette?.id) { mutableStateOf<String?>(null) }
-    var dropTarget by remember(palette?.id) { mutableStateOf<Pair<String, Boolean>?>(null) }
+    var dropTarget by remember(palette?.id) { mutableStateOf<Pair<String, Int>?>(null) }
     Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        if (plan != null) Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = selection.useShared, onCheckedChange = selection::setShared)
-            Text(stringResource(R.string.use_shared_palette))
-        }
-        val chipBounds = remember(palette?.id, sorted.map { it.key }) { mutableStateMapOf<String, Rect>() }
+        val chipBounds = remember(palette?.id, displayedRows) { mutableStateMapOf<Pair<String, Int>, Rect>() }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
             if (palette == null) Text(stringResource(R.string.choose_palette_hint))
-            else if (sorted.isEmpty()) Text(stringResource(R.string.no_palette_items))
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                sorted.forEachIndexed { index, action ->
+            else if (displayedRows.isEmpty()) Text(stringResource(R.string.no_palette_items))
+            displayedRows.forEach { line ->
+              Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).heightIn(min = 52.dp),
+                  horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                line.slots.forEachIndexed { slotIndex, key ->
+                    val action = key?.let(actionByKey::get)
+                    val slotRef = line.id to slotIndex
+                    if (action == null) {
+                        Surface(Modifier.size(width = 52.dp, height = 48.dp)
+                            .onGloballyPositioned { chipBounds[slotRef] = it.boundsInRoot() },
+                            border = if (dropTarget == slotRef) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant)) {}
+                        return@forEachIndexed
+                    }
                     val treeId = state.categories.firstOrNull { it.id == action.categoryId }?.categoryTreeId
                     val moveUpLabel = stringResource(R.string.move_up)
                     val moveDownLabel = stringResource(R.string.move_down)
@@ -206,23 +234,23 @@ internal fun TimelinePalette(
                                     if (success) Toast.makeText(context, if (treeId in hiddenTreeIds) context.getString(R.string.event_added_hidden) else context.getString(R.string.event_added), Toast.LENGTH_SHORT).show()
                                 }
                             } else {
-                                chosenTime = Instant.ofEpochMilli(plan.startsAtEpochMs).atZone(zone).toLocalTime().withSecond(0).withNano(0).toString()
+                                quickError = false
                                 quickAction = action
                             }
                         }
                     }
                     Surface(
-                        Modifier.onGloballyPositioned { chipBounds[action.key] = it.boundsInRoot() }
-                            .pointerInput(palette?.id, action.key, sorted) {
+                        Modifier.onGloballyPositioned { chipBounds[slotRef] = it.boundsInRoot() }
+                            .pointerInput(palette?.id, action.key, selection.reorderMode, displayedRows) {
+                                if (!selection.reorderMode || line.id.startsWith("dynamic:")) return@pointerInput
                                 detectDragGesturesAfterLongPress(
-                                    onDragStart = { start -> draggingKey = action.key; cursor = (chipBounds[action.key]?.topLeft ?: Offset.Zero) + start },
+                                    onDragStart = { start -> draggingKey = action.key; cursor = (chipBounds[slotRef]?.topLeft ?: Offset.Zero) + start },
                                     onDrag = { change, amount ->
                                         change.consume(); cursor += amount
-                                        val target = chipBounds.entries.firstOrNull { it.key != action.key && it.value.contains(cursor) }
-                                        dropTarget = target?.let { it.key to (cursor.x > it.value.center.x || cursor.y > it.value.center.y) }
+                                        dropTarget = chipBounds.entries.firstOrNull { it.key != slotRef && it.value.contains(cursor) }?.key
                                     },
                                     onDragEnd = {
-                                        dropTarget?.let { (target, after) -> vm.reorderPalette(palette!!.id, movePaletteKey(fullOrder, action.key, target, after)) }
+                                        dropTarget?.let { (targetRow, targetSlot) -> vm.movePaletteItem(palette!!.id, action.key, targetRow, targetSlot) }
                                         draggingKey = null; dropTarget = null
                                     },
                                     onDragCancel = { draggingKey = null; dropTarget = null },
@@ -231,33 +259,35 @@ internal fun TimelinePalette(
                             .semantics {
                                 customActions = listOf(
                                     CustomAccessibilityAction(moveUpLabel) {
-                                        if (index > 0) vm.reorderPalette(palette!!.id, movePaletteKey(fullOrder, action.key, sorted[index - 1].key, false)); true
+                                        val previous = displayedRows.getOrNull(displayedRows.indexOf(line) - 1)
+                                        if (previous != null && !previous.id.startsWith("dynamic:")) vm.movePaletteItem(palette!!.id, action.key, previous.id, previous.slots.size)
+                                        true
                                     },
                                     CustomAccessibilityAction(moveDownLabel) {
-                                        if (index < sorted.lastIndex) vm.reorderPalette(palette!!.id, movePaletteKey(fullOrder, action.key, sorted[index + 1].key, true)); true
+                                        val next = displayedRows.getOrNull(displayedRows.indexOf(line) + 1)
+                                        if (next != null && !next.id.startsWith("dynamic:")) vm.movePaletteItem(palette!!.id, action.key, next.id, next.slots.size)
+                                        true
                                     },
                                 )
                             },
                         color = if (draggingKey == action.key) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainerLow,
-                        border = if (dropTarget?.first == action.key) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
+                        border = if (dropTarget == slotRef) BorderStroke(2.dp, MaterialTheme.colorScheme.primary) else null,
                     ) {
                         Row(Modifier.heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically) {
-                            if (dropTarget == (action.key to false)) Text("‹", color = MaterialTheme.colorScheme.primary)
                             Surface(Modifier.size(3.dp, 36.dp), color = chipColor) {}
                             Text(
                                 if (action.taskId == null) action.label else stringResource(R.string.task_prefix, action.label),
                                 Modifier.clickable(enabled = !selection.reorderMode) { activate() }.padding(horizontal = 8.dp, vertical = 12.dp),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
-                            if (selection.reorderMode) {
-                                IconButton(onClick = { if (index > 0) vm.reorderPalette(palette!!.id, movePaletteKey(fullOrder, action.key, sorted[index - 1].key, false)) }, modifier = Modifier.semantics { contentDescription = moveUpLabel }) { Text("↑") }
-                                IconButton(onClick = { if (index < sorted.lastIndex) vm.reorderPalette(palette!!.id, movePaletteKey(fullOrder, action.key, sorted[index + 1].key, true)) }, modifier = Modifier.semantics { contentDescription = moveDownLabel }) { Text("↓") }
-                            }
-                            if (dropTarget == (action.key to true)) Text("›", color = MaterialTheme.colorScheme.primary)
                         }
                     }
                 }
+                if (selection.reorderMode && !line.id.startsWith("dynamic:") && line.slots.all { it == null })
+                    TextButton(onClick = { vm.removeEmptyPaletteRow(palette!!.id, line.id) }) { Text(stringResource(R.string.delete)) }
+              }
             }
+            if (selection.reorderMode && palette != null) TextButton(onClick = { vm.addPaletteRow(palette.id) }) { Text(stringResource(R.string.add_palette_row)) }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
             if (plan == null && selectedEpochDay != null) TextButton(onClick = { selectedEpochDay = null; store.setPaletteDate(workspaceId, dateKey, null) }) { Text(stringResource(R.string.palette_now)) }
@@ -280,18 +310,71 @@ internal fun TimelinePalette(
     }
     quickAction?.let { action ->
         val category = state.categories.firstOrNull { it.id == action.categoryId }
-        val selectedTime = runCatching { LocalTime.parse(chosenTime) }.getOrNull()
-        val at = selectedTime?.let { LocalDateTime.of(effectiveDate, it).atZone(zone).toInstant().toEpochMilli() }
-        AlertDialog(onDismissRequest = { quickAction = null }, title = { Text(stringResource(R.string.add_planned_event)) }, text = {
-            TimeField(chosenTime, stringResource(R.string.field_time), { chosenTime = it }, invalid = at == null || plan == null || at < plan.startsAtEpochMs || at >= plan.endsAtEpochMs)
-        }, confirmButton = { TextButton(enabled = plan != null && category != null && at != null && at >= plan.startsAtEpochMs && at < plan.endsAtEpochMs, onClick = {
-            vm.addPlannedEvent(requireNotNull(plan).id, requireNotNull(category).categoryTreeId, action.categoryId, requireNotNull(at), action.taskId) { success ->
-                if (success) {
-                    if (category.categoryTreeId in hiddenTreeIds) Toast.makeText(context, context.getString(R.string.event_added_hidden), Toast.LENGTH_SHORT).show()
-                    quickAction = null
+        val currentPlan = plan
+        QuickClockDialog(
+            initialTime = Instant.ofEpochMilli(requireNotNull(currentPlan).startsAtEpochMs).atZone(zone).toLocalTime(),
+            error = quickError,
+            saving = quickSaving,
+            onCancel = { if (!quickSaving) quickAction = null },
+            onSelected = { hour, minute ->
+                val at = quickPlannedEpoch(effectiveDate, hour, minute, zone, currentPlan)
+                if (at == null || category == null) quickError = true
+                else if (!quickSaving) {
+                    quickError = false
+                    quickSaving = true
+                    vm.addPlannedEvent(currentPlan.id, category.categoryTreeId, action.categoryId, at, action.taskId) { success ->
+                        quickSaving = false
+                        if (success) {
+                            if (category.categoryTreeId in hiddenTreeIds) Toast.makeText(context, context.getString(R.string.event_added_hidden), Toast.LENGTH_SHORT).show()
+                            quickAction = null
+                        } else quickError = true
+                    }
                 }
+            },
+        )
+    }
+}
+
+internal fun quickPlannedEpoch(date: LocalDate, hour: Int, minute: Int, zone: ZoneId, plan: PlanRow): Long? {
+    val local = LocalDateTime.of(date, LocalTime.of(hour, minute))
+    val offset = zone.rules.getValidOffsets(local).singleOrNull() ?: return null
+    return local.toInstant(offset).toEpochMilli().takeIf { it >= plan.startsAtEpochMs && it < plan.endsAtEpochMs }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+internal fun QuickClockDialog(initialTime: LocalTime, error: Boolean, saving: Boolean, onCancel: () -> Unit, onSelected: (Int, Int) -> Unit) {
+    val picker = rememberTimePickerState(initialHour = initialTime.hour, initialMinute = initialTime.minute, is24Hour = true)
+    Dialog(onDismissRequest = onCancel) {
+        Surface(shape = MaterialTheme.shapes.large, color = MaterialTheme.colorScheme.surfaceContainerHigh) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(stringResource(R.string.field_time), style = MaterialTheme.typography.titleMedium)
+                val confirmDescription = stringResource(R.string.quick_clock_confirm)
+                Box(Modifier.testTag("quick_clock").semantics {
+                    customActions = listOf(CustomAccessibilityAction(confirmDescription) {
+                        if (!saving) onSelected(picker.hour, picker.minute)
+                        true
+                    })
+                }.onKeyEvent { event ->
+                    if (event.type == KeyEventType.KeyUp && event.key == Key.Enter && !saving) {
+                        onSelected(picker.hour, picker.minute); true
+                    } else false
+                }.focusable().pointerInput(picker, saving) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        val selectingMinutes = picker.selection == TimePickerSelectionMode.Minute
+                        var released = false
+                        while (!released) {
+                            val event = awaitPointerEvent(PointerEventPass.Final)
+                            released = event.changes.none { it.pressed }
+                        }
+                        if (selectingMinutes && !saving) onSelected(picker.hour, picker.minute)
+                    }
+                }) { TimePicker(state = picker) }
+                if (error) Text(stringResource(R.string.quick_time_invalid), color = MaterialTheme.colorScheme.error)
+                TextButton(onClick = onCancel, enabled = !saving, modifier = Modifier.align(Alignment.End)) { Text(stringResource(R.string.cancel)) }
             }
-        }) { Text(stringResource(R.string.add_event)) } }, dismissButton = { TextButton(onClick = { quickAction = null }) { Text(stringResource(R.string.cancel)) } })
+        }
     }
 }
 

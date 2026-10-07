@@ -4,6 +4,7 @@ using System.Data.Common;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Npgsql;
@@ -22,6 +23,104 @@ namespace T4L.Api.Tests;
 [Collection(PostgresSyncTestGroup.Name)]
 public sealed class SyncHardeningTests
 {
+    [Fact]
+    public async Task ArchivedCategoryPathRestoresAtomicallyWithoutRestoringSibling() => await WithDatabaseAsync(async (sync, db, ct) =>
+    {
+        var client = Guid.NewGuid(); var treeId = Guid.NewGuid(); var rootId = Guid.NewGuid();
+        var childId = Guid.NewGuid(); var siblingId = Guid.NewGuid();
+        async Task<MutationResult> Push(string type, Guid id, long revision, object payload) =>
+            (await sync.PushAsync(new PushRequest(client, [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+                type, id, "upsert", revision, JsonSerializer.SerializeToElement(payload))]), ct)).Results.Single();
+        Assert.Equal("applied", (await Push("categoryTree", treeId, 0, new { name = "Tree", role = "standard", sortOrder = 0, archived = false })).Status);
+        object Category(Guid? parentId, bool archived) => new { categoryTreeId = treeId, parentId, name = "Node", loadType = "light", sortOrder = 0, archived };
+        Assert.Equal("applied", (await Push("category", rootId, 0, Category(null, false))).Status);
+        Assert.Equal("applied", (await Push("category", childId, 0, Category(rootId, false))).Status);
+        Assert.Equal("applied", (await Push("category", siblingId, 0, Category(rootId, false))).Status);
+        Assert.Equal("atomic_group_required", (await Push("category", rootId, 1, Category(null, true))).ErrorCode);
+        var initialArchiveId = Guid.NewGuid();
+        Assert.All((await sync.PushAsync(new PushRequest(client, [
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", rootId, "upsert", 1, JsonSerializer.SerializeToElement(Category(null, true)), initialArchiveId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", childId, "upsert", 1, JsonSerializer.SerializeToElement(Category(rootId, true)), initialArchiveId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", siblingId, "upsert", 1, JsonSerializer.SerializeToElement(Category(rootId, true)), initialArchiveId)
+        ]), ct)).Results, x => Assert.Equal("applied", x.Status));
+        var groupId = Guid.NewGuid();
+        var mutations = new[] {
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", rootId, "upsert", 2,
+                JsonSerializer.SerializeToElement(Category(null, false)), groupId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", childId, "upsert", 2,
+                JsonSerializer.SerializeToElement(Category(rootId, false)), groupId)
+        };
+        var response = await sync.PushAsync(new PushRequest(client, mutations), ct);
+        Assert.All(response.Results, result => Assert.Equal("applied", result.Status));
+        Assert.False((await db.Categories.SingleAsync(x => x.Id == rootId, ct)).Archived);
+        Assert.False((await db.Categories.SingleAsync(x => x.Id == childId, ct)).Archived);
+        Assert.True((await db.Categories.SingleAsync(x => x.Id == siblingId, ct)).Archived);
+        var incompleteGroupId = Guid.NewGuid();
+        var incomplete = await sync.PushAsync(new PushRequest(client, [
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", rootId, "upsert", 3,
+                JsonSerializer.SerializeToElement(Category(null, true)), incompleteGroupId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", childId, "upsert", 3,
+                JsonSerializer.SerializeToElement(Category(rootId, true)), incompleteGroupId)
+        ]), ct);
+        Assert.All(incomplete.Results, x => Assert.Equal("incomplete_category_archive_group", x.ErrorCode));
+        Assert.False((await db.Categories.AsNoTracking().SingleAsync(x => x.Id == rootId, ct)).Archived);
+        var archiveId = Guid.NewGuid();
+        var archive = new[] {
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", rootId, "upsert", 3,
+                JsonSerializer.SerializeToElement(Category(null, true)), archiveId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", childId, "upsert", 3,
+                JsonSerializer.SerializeToElement(Category(rootId, true)), archiveId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", siblingId, "upsert", 2,
+                JsonSerializer.SerializeToElement(Category(rootId, true)), archiveId)
+        };
+        var archived = await sync.PushAsync(new PushRequest(client, archive), ct);
+        Assert.All(archived.Results, x => Assert.Equal("applied", x.Status));
+        Assert.All((await db.Categories.AsNoTracking().Where(x => new[] { rootId, childId, siblingId }.Contains(x.Id)).ToArrayAsync(ct)), x => Assert.True(x.Archived));
+        var duplicate = await sync.PushAsync(new PushRequest(client, archive), ct);
+        Assert.All(duplicate.Results, x => Assert.True(x.Duplicate));
+        var restoreId = Guid.NewGuid();
+        var restore = new[] {
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", rootId, "upsert", 4,
+                JsonSerializer.SerializeToElement(Category(null, false)), restoreId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", childId, "upsert", 4,
+                JsonSerializer.SerializeToElement(Category(rootId, false)), restoreId),
+            new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId, "category", siblingId, "upsert", 3,
+                JsonSerializer.SerializeToElement(Category(rootId, false)), restoreId)
+        };
+        Assert.All((await sync.PushAsync(new PushRequest(client, restore), ct)).Results, x => Assert.Equal("applied", x.Status));
+        Assert.Equal("applied", (await sync.PushAsync(new PushRequest(Guid.NewGuid(), [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "category", childId, "upsert", 5, JsonSerializer.SerializeToElement(new { categoryTreeId = treeId, parentId = rootId,
+                name = "Other client", loadType = "light", sortOrder = 0, archived = false }))]), ct)).Results.Single().Status);
+        var staleGroupId = Guid.NewGuid();
+        var staleArchive = archive.Select(x => x with { ClientMutationId = Guid.NewGuid(), AtomicGroupId = staleGroupId,
+            BaseRevision = x.EntityId == siblingId ? 4 : 5 }).ToArray();
+        var stale = await sync.PushAsync(new PushRequest(client, staleArchive), ct);
+        Assert.Equal("conflict", stale.Results[1].Status);
+        Assert.NotNull(stale.Results[1].ServerEntity);
+        Assert.Equal(childId, stale.Results[1].ServerEntity!.Value.GetProperty("id").GetGuid());
+        Assert.Equal("atomic_group_aborted", stale.Results[0].ErrorCode);
+        Assert.Null(stale.Results[0].ServerEntity);
+        Assert.Equal("atomic_group_aborted", stale.Results[2].ErrorCode);
+        Assert.False((await db.Categories.AsNoTracking().SingleAsync(x => x.Id == rootId, ct)).Archived);
+        Assert.False((await db.Categories.AsNoTracking().SingleAsync(x => x.Id == siblingId, ct)).Archived);
+    });
+
+    [Fact]
+    public Task ConfiguredPushLimitAccepts101() => WithDatabaseAsync(async (sync, _, ct) =>
+    {
+        var mutations = Enumerable.Range(0, 101).Select(_ => new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "unsupported", Guid.NewGuid(), "upsert", 0, JsonSerializer.SerializeToElement(new { }))).ToArray();
+        Assert.Equal(101, (await sync.PushAsync(new PushRequest(Guid.NewGuid(), mutations), ct)).Results.Count);
+    }, maxMutations: 101);
+
+    [Fact]
+    public Task DefaultPushLimitRejects101() => WithDatabaseAsync(async (sync, _, ct) =>
+    {
+        var mutations = Enumerable.Range(0, 101).Select(_ => new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
+            "unsupported", Guid.NewGuid(), "upsert", 0, JsonSerializer.SerializeToElement(new { }))).ToArray();
+        await Assert.ThrowsAsync<ArgumentException>(() => sync.PushAsync(new PushRequest(Guid.NewGuid(), mutations), ct));
+    });
+
     [Fact]
     public void ClientDiagnosticsRejectUnknownEventsAndAttributes()
     {
@@ -143,7 +242,16 @@ public sealed class SyncHardeningTests
             TrashedAt = now.AddDays(-31), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-31) };
         var recentPalette = new PaletteEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Recent palette", Archived = true,
             TrashedAt = now.AddDays(-29), Revision = 1, CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-29) };
-        db.CategoryTrees.AddRange(expiredTree, recentTree);
+        var activeTree = new CategoryTreeEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId, Name = "Active tree",
+            CreatedAt = now.AddDays(-40), UpdatedAt = now.AddDays(-40), Revision = 1 };
+        var expiredCategory = new CategoryEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId,
+            CategoryTreeId = activeTree.Id, Name = "Old category", Archived = true, TrashedAt = now.AddHours(-49),
+            CreatedAt = now.AddDays(-4), UpdatedAt = now.AddHours(-49), Revision = 1 };
+        var recentCategory = new CategoryEntity { Id = Guid.NewGuid(), WorkspaceId = DevelopmentIdentity.WorkspaceId,
+            CategoryTreeId = activeTree.Id, Name = "Recent category", Archived = true, TrashedAt = now.AddHours(-47),
+            CreatedAt = now.AddDays(-4), UpdatedAt = now.AddHours(-47), Revision = 1 };
+        db.CategoryTrees.AddRange(expiredTree, recentTree, activeTree);
+        db.Categories.AddRange(expiredCategory, recentCategory);
         db.Palettes.AddRange(expiredPalette, recentPalette);
         await db.SaveChangesAsync(ct);
         var services = new ServiceCollection();
@@ -157,16 +265,22 @@ public sealed class SyncHardeningTests
         await db.Entry(recentTree).ReloadAsync(ct);
         await db.Entry(expiredPalette).ReloadAsync(ct);
         await db.Entry(recentPalette).ReloadAsync(ct);
+        await db.Entry(expiredCategory).ReloadAsync(ct);
+        await db.Entry(recentCategory).ReloadAsync(ct);
 
         Assert.NotNull(expiredTree.PurgedAt);
         Assert.NotNull(expiredPalette.PurgedAt);
         Assert.Null(recentTree.PurgedAt);
         Assert.Null(recentPalette.PurgedAt);
+        Assert.NotNull(expiredCategory.PurgedAt);
+        Assert.Null(recentCategory.PurgedAt);
         Assert.Equal(2, expiredTree.Revision);
         Assert.Equal(2, expiredPalette.Revision);
+        Assert.Equal(2, expiredCategory.Revision);
         var changes = await sync.PullAsync(DevelopmentIdentity.WorkspaceId, 0, 100, ct);
         Assert.Contains(changes.Changes, x => x.EntityType == "categoryTree" && x.EntityId == expiredTree.Id && x.Revision == 2);
         Assert.Contains(changes.Changes, x => x.EntityType == "palette" && x.EntityId == expiredPalette.Id && x.Revision == 2);
+        Assert.Contains(changes.Changes, x => x.EntityType == "category" && x.EntityId == expiredCategory.Id && x.Revision == 2);
     });
 
     [Fact]
@@ -197,7 +311,27 @@ public sealed class SyncHardeningTests
             palettes = new[] { new { name = "Bad", categoryColorsJson = 123, itemOrderJson = "[]" } }
         });
         await Assert.ThrowsAsync<ArgumentException>(() => transfer.ImportAsync(new WorkspaceImportRequest("Imported", wrongType), ct));
+        var malformedOrder = JsonSerializer.SerializeToElement(new {
+            formatVersion = 4,
+            categoryTrees = Array.Empty<CategoryTreeEntity>(), categories = Array.Empty<CategoryEntity>(),
+            events = Array.Empty<TimeEventEntity>(), tasks = Array.Empty<TaskEntity>(), taskComments = Array.Empty<TaskCommentEntity>(),
+            plans = Array.Empty<PlanEntity>(), budgetAllocations = Array.Empty<BudgetAllocationEntity>(),
+            plannedEvents = Array.Empty<PlannedEventEntity>(), treeAppearances = Array.Empty<TreeAppearanceEntity>(),
+            palettes = new[] { new { name = "Broken v4", categoryColorsJson = "{}", itemOrderJson = "{" } }
+        });
+        await Assert.ThrowsAsync<ArgumentException>(() => transfer.ImportAsync(new WorkspaceImportRequest("Imported", malformedOrder), ct));
         Assert.Equal(workspaceCount, await db.Workspaces.CountAsync(ct));
+        var validV4 = JsonSerializer.SerializeToElement(new {
+            formatVersion = 4,
+            categoryTrees = Array.Empty<CategoryTreeEntity>(), categories = Array.Empty<CategoryEntity>(),
+            events = Array.Empty<TimeEventEntity>(), tasks = Array.Empty<TaskEntity>(), taskComments = Array.Empty<TaskCommentEntity>(),
+            plans = Array.Empty<PlanEntity>(), budgetAllocations = Array.Empty<BudgetAllocationEntity>(),
+            plannedEvents = Array.Empty<PlannedEventEntity>(), treeAppearances = Array.Empty<TreeAppearanceEntity>(),
+            palettes = new[] { new PaletteEntity { Id = Guid.NewGuid(), Name = "Valid v4", CategoryColorsJson = "{}", ItemOrderJson = "[]" } }
+        });
+        var imported = await transfer.ImportAsync(new WorkspaceImportRequest("Imported", validV4), ct);
+        Assert.Equal("[]", (await db.Palettes.SingleAsync(x => x.WorkspaceId == imported.WorkspaceId, ct)).RowsJson);
+        Assert.Equal(workspaceCount + 1, await db.Workspaces.CountAsync(ct));
     });
 
     [Fact]
@@ -240,7 +374,8 @@ public sealed class SyncHardeningTests
         var countedSync = new SyncService(countedDb, provider.GetRequiredService<IHubContext<ChangeHub>>(), new WorkspaceAccess(new TestActor()),
             TimeProvider.System, NullLogger<SyncService>.Instance);
         var payload = new { name = "Many", categoryColorsJson = JsonSerializer.Serialize(ids.ToDictionary(id => id, _ => (string?)null)),
-            itemOrderJson = JsonSerializer.Serialize(ids.Select(id => $"c:{id:D}")), archived = false };
+            itemOrderJson = JsonSerializer.Serialize(ids.Select(id => $"c:{id:D}")),
+            rowsJson = JsonSerializer.Serialize(ids.Select((id, index) => new { id = $"row-{index}", slots = new string?[] { $"c:{id:D}" } })), archived = false };
         var result = (await countedSync.PushAsync(new PushRequest(Guid.NewGuid(), [new MutationDto(Guid.NewGuid(), DevelopmentIdentity.WorkspaceId,
             "palette", Guid.NewGuid(), "upsert", 0, JsonSerializer.SerializeToElement(payload))]), ct)).Results.Single();
         Assert.Equal("applied", result.Status);
@@ -438,7 +573,7 @@ public sealed class SyncHardeningTests
         Assert.False((await avatarTask).Conflict);
     });
 
-    private static async Task WithDatabaseAsync(Func<SyncService, T4LDbContext, CancellationToken, Task> test)
+    private static async Task WithDatabaseAsync(Func<SyncService, T4LDbContext, CancellationToken, Task> test, int? maxMutations = null)
     {
         var rootConnectionString = Environment.GetEnvironmentVariable("T4L_TEST_POSTGRES");
         Assert.SkipWhen(string.IsNullOrWhiteSpace(rootConnectionString), "Set T4L_TEST_POSTGRES to run PostgreSQL sync integration tests.");
@@ -455,7 +590,10 @@ public sealed class SyncHardeningTests
             var services = new ServiceCollection(); services.AddLogging(); services.AddSignalR();
             await using var provider = services.BuildServiceProvider();
             var actor = new TestActor();
-            var sync = new SyncService(db, provider.GetRequiredService<IHubContext<ChangeHub>>(), new WorkspaceAccess(actor), TimeProvider.System, NullLogger<SyncService>.Instance);
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(maxMutations is { } limit
+                ? new Dictionary<string, string?> { ["Sync:MaxMutationsPerPush"] = limit.ToString(System.Globalization.CultureInfo.InvariantCulture) }
+                : new Dictionary<string, string?>()).Build();
+            var sync = new SyncService(db, provider.GetRequiredService<IHubContext<ChangeHub>>(), new WorkspaceAccess(actor), TimeProvider.System, NullLogger<SyncService>.Instance, configuration);
             await test(sync, db, ct);
         }
         finally

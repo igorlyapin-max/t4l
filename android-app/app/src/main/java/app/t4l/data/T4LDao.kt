@@ -66,8 +66,9 @@ interface T4LDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putAvatarMutation(row: AvatarMutationRow)
     @Insert(onConflict = OnConflictStrategy.REPLACE) suspend fun putPersonalConflict(row: PersonalConflictRow)
 
-    @Query("SELECT * FROM outbox WHERE workspaceId=:workspaceId ORDER BY createdAtEpochMs, clientMutationId LIMIT :limit") suspend fun pendingMutations(workspaceId: String, limit: Int = 100): List<OutboxRow>
+    @Query("SELECT * FROM outbox WHERE workspaceId=:workspaceId AND attemptCount=0 AND (dependsOnGroupId IS NULL OR NOT EXISTS (SELECT 1 FROM outbox AS dependency WHERE dependency.atomicGroupId=outbox.dependsOnGroupId)) ORDER BY createdAtEpochMs, clientMutationId LIMIT :limit") suspend fun pendingMutations(workspaceId: String, limit: Int = 100): List<OutboxRow>
     @Query("SELECT * FROM outbox WHERE atomicGroupId=:groupId ORDER BY createdAtEpochMs, clientMutationId") suspend fun pendingAtomicGroup(groupId: String): List<OutboxRow>
+    @Query("SELECT * FROM outbox WHERE dependsOnGroupId=:groupId") suspend fun pendingDependents(groupId: String): List<OutboxRow>
     @Query("SELECT EXISTS(SELECT 1 FROM outbox WHERE entityType=:entityType AND entityId=:entityId AND atomicGroupId IS NOT NULL)") suspend fun hasPendingAtomicForEntity(entityType: String, entityId: String): Boolean
     @Query("UPDATE outbox SET baseRevision=:revision WHERE clientMutationId=:id") suspend fun updateMutationRevision(id: String, revision: Long)
     @Query("SELECT * FROM outbox WHERE clientMutationId=:id") suspend fun pendingMutation(id: String): OutboxRow?
@@ -78,8 +79,10 @@ interface T4LDao {
     @Query("SELECT EXISTS(SELECT 1 FROM conflicts WHERE entityType=:entityType AND entityId=:entityId)") suspend fun hasConflictForEntity(entityType: String, entityId: String): Boolean
     @Query("SELECT EXISTS(SELECT 1 FROM conflicts WHERE workspaceId=:workspaceId AND (linkedEventId IS NOT NULL OR errorCode LIKE 'atomic_group_%'))") suspend fun hasUnresolvedAtomicConflict(workspaceId: String): Boolean
     @Query("SELECT * FROM conflicts WHERE clientMutationId=:id") suspend fun conflict(id: String): ConflictRow?
+    @Query("SELECT EXISTS(SELECT 1 FROM conflicts WHERE clientMutationId IN (SELECT clientMutationId FROM outbox WHERE atomicGroupId=:groupId))") suspend fun hasConflictForAtomicGroup(groupId: String): Boolean
     @Query("DELETE FROM conflicts WHERE clientMutationId=:id") suspend fun deleteConflict(id: String)
     @Query("UPDATE outbox SET attemptCount=0,lastError=NULL WHERE clientMutationId=:id") suspend fun retryMutation(id: String)
+    @Query("UPDATE outbox SET attemptCount=0,lastError=NULL,baseRevision=:revision WHERE clientMutationId=:id") suspend fun retryMutationWithRevision(id: String, revision: Long)
     @Query("SELECT * FROM sync_cursors WHERE workspaceId=:workspaceId") suspend fun cursor(workspaceId: String): SyncCursorRow?
     @Query("SELECT * FROM user_profiles WHERE userId=:userId") suspend fun profile(userId: String): UserProfileRow?
     @Query("SELECT * FROM profile_mutations WHERE userId=:userId ORDER BY createdAtEpochMs") suspend fun profileMutations(userId: String): List<ProfileMutationRow>

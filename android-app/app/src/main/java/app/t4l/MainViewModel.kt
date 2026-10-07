@@ -60,13 +60,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun removePaletteCategory(id: String, categoryId: String) = mutate { repository.removePaletteCategory(id, categoryId) }
     fun setPaletteCategoryColor(id: String, categoryId: String, colorHex: String?) = mutate { repository.setPaletteCategoryColor(id, categoryId, colorHex) }
     fun reorderPalette(id: String, order: List<String>) = mutate { repository.reorderPalette(id, order) }
+    fun addPaletteRow(id: String) = mutate { repository.addPaletteRow(id) }
+    fun removeEmptyPaletteRow(id: String, rowId: String) = mutate { repository.removeEmptyPaletteRow(id, rowId) }
+    fun movePaletteItem(id: String, key: String, rowId: String, slot: Int) = mutate { repository.movePaletteItem(id, key, rowId, slot) }
+    fun ensurePaletteTaskRows(id: String, keys: List<String>) = mutate { repository.ensurePaletteTaskRows(id, keys) }
     fun archivePalette(id: String) = mutate { repository.archivePalette(id) }
     fun restorePalette(id: String) = mutate { repository.restorePalette(id) }
     fun purgePalette(id: String) = mutate { repository.purgePalette(id) }
     fun archiveCategory(id: String) = mutate { repository.archiveCategory(id) }
     fun archiveCategoryTree(id: String) = mutate { repository.archiveCategoryTree(id) }
     fun restoreCategoryTree(id: String) = mutate { repository.restoreCategoryTree(id) }
-    fun restoreArchivedCategories(treeId: String) = mutate { repository.restoreArchivedCategories(treeId) }
+    fun restoreCategory(categoryId: String) = mutate { repository.restoreCategory(categoryId) }
     fun purgeCategoryTree(id: String) = mutate { repository.purgeCategoryTree(id) }
     fun switch(treeId: String, categoryId: String?) = mutate { repository.switchCategory(treeId, categoryId) }
     fun addEvent(treeId: String, categoryId: String?, at: Long, taskId: String? = null, onComplete: ((Boolean) -> Unit)? = null) = mutate(onComplete) { repository.addEvent(treeId, categoryId, at, taskId) }
@@ -116,8 +120,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             .onFailure { error -> showFailure(error); app.logger.event("ui_action_failed", mapOf("errorType" to error.javaClass.simpleName)); onComplete?.invoke(false) }
     }
     fun consumeFeedback(id: Long) { if (uiFeedback.value?.id == id) uiFeedback.value = null }
-    fun resolveConflictUseServer(id: String) = resolveConflict(id) { repository.resolveConflictUseServer(id) }
-    fun resolveConflictUseLocal(id: String, payload: String? = null) = resolveConflict(id) { repository.resolveConflictUseLocal(id, payload) }
+    fun resolveConflictUseServer(id: String) = resolveConflict(id) {
+        val snapshot = if (repository.isCategoryGroupConflict(id)) app.apiClient.snapshot(repository.workspaceId) else null
+        repository.resolveConflictUseServer(id, snapshot)
+    }
+    fun resolveConflictUseLocal(id: String, payload: String? = null) = resolveConflict(id) {
+        val snapshot = if (repository.isCategoryGroupConflict(id)) app.apiClient.snapshot(repository.workspaceId) else null
+        repository.resolveConflictUseLocal(id, payload, snapshot = snapshot)
+    }
     fun retryRejected(id: String, payload: String? = null) = mutate { repository.retryRejected(id, payload) }
     fun syncNow() = app.syncScheduler.syncNow()
     fun diagnosticLevel(): DiagnosticLevel = app.logger.level

@@ -32,19 +32,20 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
 
     private suspend fun sync(app: T4LApplication) {
         val bootstrap = app.apiClient.bootstrap()
+        app.serverSettings.rememberSyncLimit(bootstrap.syncMaxMutationsPerPush)
         app.repository.updateBootstrap(bootstrap.userId, bootstrap.defaultWorkspaceId,
             bootstrap.workspaces.map { WorkspaceOption(it.workspaceId, it.name, it.role) })
         val removedPersonalItems = app.profileRepository.bindUser(bootstrap.userId)
         if (removedPersonalItems > 0) app.logger.event("profile_actor_rebound", mapOf("pendingCount" to removedPersonalItems.toString()))
         app.profileRepository.sync(bootstrap.userId)
         val dao = app.database.dao()
-        while (!dao.hasUnresolvedAtomicConflict(app.repository.workspaceId)) {
+        while (true) {
             val first = dao.pendingMutations(app.repository.workspaceId, 1).firstOrNull() ?: break
-            if (first.attemptCount > 0) break
             val pending = first.atomicGroupId?.let { dao.pendingAtomicGroup(it) } ?: listOf(first)
-            if (pending.size !in 1..2 || pending.any { it.workspaceId != first.workspaceId }) {
+            val categoryRestoreGroup = pending.all { it.entityType.equals("category", true) && it.operation == "upsert" }
+            if (pending.size !in 1..bootstrap.syncMaxMutationsPerPush || (!categoryRestoreGroup && pending.size > 2) || pending.any { it.workspaceId != first.workspaceId }) {
                 dao.markMutationFailure(pending.map { it.clientMutationId }, "invalid_atomic_group")
-                break
+                continue
             }
             val response = app.apiClient.push(PushBody(app.repository.clientId, pending.map { it.toMutation() }))
             val results = response.results.associateBy { it.clientMutationId }
@@ -52,7 +53,8 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                 app.database.withTransaction { dao.deleteMutations(pending.map { it.clientMutationId }) }
                 continue
             }
-            val conflicted = pending.firstOrNull { results[it.clientMutationId]?.status == "conflict" && results[it.clientMutationId]?.serverEntity != null }
+            val conflicted = pending.firstOrNull { results[it.clientMutationId]?.status == "conflict" &&
+                (categoryRestoreGroup || results[it.clientMutationId]?.serverEntity != null) }
             if (conflicted != null) {
                 val result = requireNotNull(results[conflicted.clientMutationId])
                 app.database.withTransaction {
@@ -61,12 +63,13 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
                         System.currentTimeMillis(), conflicted.operation,
                         if (first.atomicGroupId != null) "atomic_group_${result.errorCode ?: "conflict"}" else result.errorCode,
                         pending.firstOrNull { it.entityType.equals("event", true) }?.entityId))
-                    dao.deleteMutations(pending.map { it.clientMutationId })
+                    if (!categoryRestoreGroup) dao.deleteMutations(pending.map { it.clientMutationId })
+                    else dao.markMutationFailure(pending.map { it.clientMutationId }, "atomic_group_conflict")
                 }
             } else {
                 dao.markMutationFailure(pending.map { it.clientMutationId }, response.results.firstOrNull { it.status != "applied" }?.errorCode ?: "atomic_group_aborted")
             }
-            break
+            continue
         }
         val workspaceId = app.repository.workspaceId; var cursor = dao.cursor(workspaceId)?.cursor ?: 0
         do {

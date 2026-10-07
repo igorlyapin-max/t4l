@@ -41,20 +41,21 @@ public sealed class PaletteSyncTests
             Assert.Equal("applied", (await Push(clientA, Mutation("category", categoryId, 0, new { categoryTreeId = treeId, parentId = (Guid?)null, name = "Work", loadType = "light", sortOrder = 0, archived = false }))).Status);
             Assert.Equal("applied", (await Push(clientA, Mutation("treeAppearance", treeId, 0, new { categoryTreeId = treeId, colorHex = "#1976D2" }))).Status);
             var palettePayload = new { name = "Default", categoryColorsJson = JsonSerializer.Serialize(new Dictionary<Guid, string?> { [categoryId] = null }),
-                itemOrderJson = JsonSerializer.Serialize(new[] { $"c:{categoryId:D}" }), archived = false };
+                itemOrderJson = JsonSerializer.Serialize(new[] { $"c:{categoryId:D}" }),
+                rowsJson = JsonSerializer.Serialize(new[] { new { id = Guid.NewGuid().ToString("D"), slots = new string?[] { $"c:{categoryId:D}", null } } }), archived = false };
             Assert.Equal("applied", (await Push(clientA, Mutation("palette", paletteId, 0, palettePayload))).Status);
             var received = await sync.PullAsync(DevelopmentIdentity.WorkspaceId, 0, 100, ct);
             Assert.Contains(received.Changes, x => x.EntityType == "palette" && x.EntityId == paletteId);
             Assert.Contains(received.Changes, x => x.EntityType == "treeAppearance" && x.EntityId == treeId);
             var clientBUpdate = Mutation("palette", paletteId, 1, palettePayload);
-            var clientAUpdate = Mutation("palette", paletteId, 1, new { name = "Changed", palettePayload.categoryColorsJson, palettePayload.itemOrderJson, archived = false });
+            var clientAUpdate = Mutation("palette", paletteId, 1, new { name = "Changed", palettePayload.categoryColorsJson, palettePayload.itemOrderJson, palettePayload.rowsJson, archived = false });
             Assert.Equal("applied", (await Push(clientA, clientAUpdate)).Status);
             Assert.Equal("conflict", (await Push(clientB, clientBUpdate)).Status);
             Assert.Equal("Changed", (await db.Palettes.SingleAsync(x => x.Id == paletteId, ct)).Name);
-            var archive = await Push(clientA, Mutation("palette", paletteId, 2, new { name = "Changed", palettePayload.categoryColorsJson, palettePayload.itemOrderJson, archived = true }));
+            var archive = await Push(clientA, Mutation("palette", paletteId, 2, new { name = "Changed", palettePayload.categoryColorsJson, palettePayload.itemOrderJson, palettePayload.rowsJson, archived = true }));
             Assert.Equal("applied", archive.Status);
             Assert.NotNull((await db.Palettes.SingleAsync(x => x.Id == paletteId, ct)).TrashedAt);
-            var restore = await Push(clientB, Mutation("palette", paletteId, 3, new { name = "Changed", palettePayload.categoryColorsJson, palettePayload.itemOrderJson, archived = false }));
+            var restore = await Push(clientB, Mutation("palette", paletteId, 3, new { name = "Changed", palettePayload.categoryColorsJson, palettePayload.itemOrderJson, palettePayload.rowsJson, archived = false }));
             Assert.Equal("applied", restore.Status);
             Assert.Null((await db.Palettes.SingleAsync(x => x.Id == paletteId, ct)).TrashedAt);
 
@@ -62,7 +63,7 @@ public sealed class PaletteSyncTests
             var v3 = JsonSerializer.SerializeToElement(new { formatVersion = 3 });
             await Assert.ThrowsAsync<ArgumentException>(() => transfer.ImportAsync(new WorkspaceImportRequest("Old", v3), ct));
             var snapshot = JsonSerializer.SerializeToElement(new {
-                formatVersion = 4,
+                formatVersion = 5,
                 categoryTrees = await db.CategoryTrees.AsNoTracking().ToArrayAsync(ct),
                 categories = await db.Categories.AsNoTracking().ToArrayAsync(ct),
                 events = Array.Empty<TimeEventEntity>(),
@@ -81,6 +82,8 @@ public sealed class PaletteSyncTests
             Assert.Equal(importedTree.Id, (await db.TreeAppearances.SingleAsync(x => x.WorkspaceId == imported.WorkspaceId, ct)).CategoryTreeId);
             Assert.Contains(importedCategory.Id.ToString("D"), importedPalette.CategoryColorsJson);
             Assert.DoesNotContain(categoryId.ToString("D"), importedPalette.CategoryColorsJson);
+            Assert.Contains("null", importedPalette.RowsJson);
+            Assert.Contains(importedCategory.Id.ToString("D"), importedPalette.RowsJson);
         }
         finally
         {

@@ -18,8 +18,8 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
     {
         if (string.IsNullOrWhiteSpace(request.Name) || request.Name.Length > 120)
             throw new ArgumentException("Workspace name must contain between 1 and 120 characters.");
-        if (request.Snapshot.ValueKind != JsonValueKind.Object || !request.Snapshot.TryGetProperty("formatVersion", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var formatVersion) || formatVersion != 4)
-            throw new ArgumentException("Unsupported backup formatVersion. Only formatVersion 4 is accepted.");
+        if (request.Snapshot.ValueKind != JsonValueKind.Object || !request.Snapshot.TryGetProperty("formatVersion", out var version) || version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var formatVersion) || formatVersion is not (4 or 5))
+            throw new ArgumentException("Unsupported backup formatVersion. Only formatVersion 4 or 5 is accepted.");
         foreach (var collection in new[] { "categoryTrees", "categories", "events", "tasks", "taskComments", "plans", "budgetAllocations", "plannedEvents", "treeAppearances", "palettes" })
             if (!request.Snapshot.TryGetProperty(collection, out var value) || value.ValueKind != JsonValueKind.Array)
                 throw new ArgumentException($"Backup is missing array {collection}.");
@@ -34,6 +34,20 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
         var plannedEvents = Read<PlannedEventEntity>(request.Snapshot, "plannedEvents");
         var appearances = Read<TreeAppearanceEntity>(request.Snapshot, "treeAppearances");
         var palettes = Read<PaletteEntity>(request.Snapshot, "palettes");
+        if (formatVersion == 4)
+            foreach (var palette in palettes)
+            {
+                try
+                {
+                    using var legacyOrder = JsonDocument.Parse(palette.ItemOrderJson);
+                    if (legacyOrder.RootElement.ValueKind != JsonValueKind.Array ||
+                        legacyOrder.RootElement.EnumerateArray().Any(x => x.ValueKind != JsonValueKind.String))
+                        throw new ArgumentException("Invalid v4 palette itemOrderJson.");
+                    palette.RowsJson = JsonSerializer.Serialize(legacyOrder.RootElement.EnumerateArray()
+                        .Select(x => new { id = Guid.NewGuid().ToString("D"), slots = new[] { x.GetString() } }));
+                }
+                catch (JsonException error) { throw new ArgumentException("Invalid v4 palette itemOrderJson.", error); }
+            }
         ValidateSnapshot(trees, categories, events, tasks, comments, plans, allocations, plannedEvents, appearances, palettes);
 
         var actor = await currentActor.GetAsync(cancellationToken);
@@ -62,6 +76,8 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
             entity.CategoryTreeId = Required(treeIds, entity.CategoryTreeId, "category.categoryTreeId");
             entity.ParentId = entity.ParentId is { } id ? Required(categoryIds, id, "category.parentId") : null;
             Reset(entity, workspaceId, now);
+            entity.TrashedAt = entity.Archived ? now : null;
+            entity.PurgedAt = entity.PurgedAt is null ? null : now;
         }
         foreach (var entity in tasks)
         {
@@ -111,14 +127,21 @@ public sealed class WorkspaceTransferService(T4LDbContext db, TimeProvider timeP
             entity.CategoryColorsJson = JsonSerializer.Serialize(colors.RootElement.EnumerateObject().ToDictionary(
                 x => Required(categoryIds, Guid.Parse(x.Name), "palette.categoryId").ToString("D"),
                 x => x.Value.ValueKind == JsonValueKind.Null ? null : x.Value.GetString()));
-            using var order = JsonDocument.Parse(entity.ItemOrderJson);
-            entity.ItemOrderJson = JsonSerializer.Serialize(order.RootElement.EnumerateArray().Select(x => {
-                var key = x.GetString()!;
+            string? RemapPaletteKey(string? key) {
+                if (key is null) return null;
                 if (key.StartsWith("t:", StringComparison.Ordinal))
                     return taskIds.TryGetValue(Guid.Parse(key[2..]), out var taskId) ? "t:" + taskId.ToString("D") : null;
                 var categoryId = Required(categoryIds, Guid.Parse(key[2..]), "palette.order.category");
                 return "c:" + categoryId.ToString("D");
-            }).Where(x => x is not null).ToArray());
+            }
+            using var rows = JsonDocument.Parse(entity.RowsJson);
+            var remappedRows = rows.RootElement.EnumerateArray().Select(row => new {
+                id = Guid.NewGuid().ToString("D"),
+                slots = row.GetProperty("slots").EnumerateArray().Select(slot =>
+                    slot.ValueKind == JsonValueKind.Null ? null : RemapPaletteKey(slot.GetString())).ToArray()
+            }).ToArray();
+            entity.RowsJson = JsonSerializer.Serialize(remappedRows);
+            entity.ItemOrderJson = JsonSerializer.Serialize(remappedRows.SelectMany(x => x.slots).Where(x => x is not null).ToArray());
             entity.TrashedAt = entity.Archived ? now : null;
             entity.PurgedAt = entity.PurgedAt is null ? null : now;
             Reset(entity, workspaceId, now);

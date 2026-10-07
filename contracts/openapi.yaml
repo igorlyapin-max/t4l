@@ -268,7 +268,7 @@ paths:
               required: [name, snapshot]
               properties:
                 name: { type: string, minLength: 1, maxLength: 120 }
-                snapshot: { $ref: '#/components/schemas/WorkspaceSnapshot' }
+                snapshot: { oneOf: [{ $ref: '#/components/schemas/WorkspaceSnapshot' }, { $ref: '#/components/schemas/WorkspaceSnapshotV4' }] }
       responses:
         '200':
           description: Imported workspace with remapped IDs
@@ -321,10 +321,11 @@ components:
   schemas:
     Bootstrap:
       type: object
-      required: [userId, defaultWorkspaceId, workspaces]
+      required: [userId, defaultWorkspaceId, workspaces, syncMaxMutationsPerPush]
       properties:
         userId: { type: string, format: uuid }
         defaultWorkspaceId: { type: string, format: uuid }
+        syncMaxMutationsPerPush: { type: integer, minimum: 1, maximum: 1000, description: 'Maximum mutations in a push, including every member of an atomic category group.' }
         workspaces:
           type: array
           items:
@@ -403,14 +404,25 @@ components:
       allOf:
         - $ref: '#/components/schemas/SyncMetadata'
         - type: object
-          required: [name, categoryColorsJson, itemOrderJson, archived]
+          required: [name, categoryColorsJson, itemOrderJson, rowsJson, archived]
           properties:
             name: { type: string, minLength: 1, maxLength: 120 }
             categoryColorsJson: { type: string, maxLength: 100000, description: 'JSON object of at most 1000 unique category UUID keys mapping to null or #RRGGBB. Every category appears once in itemOrderJson.' }
             itemOrderJson: { type: string, maxLength: 100000, description: 'JSON array of at most 2000 unique c:<category UUID> and t:<task UUID> keys. Deleted task keys may be retained; import removes keys whose tasks are absent.' }
+            rowsJson: { type: string, maxLength: 200000, description: 'JSON array of stable row objects with id and nullable slots. Non-null slots in row order must equal itemOrderJson. Empty slots and rows persist.' }
             archived: { type: boolean }
             trashedAt: { type: [string, 'null'], format: date-time, readOnly: true }
             purgedAt: { type: [string, 'null'], format: date-time, readOnly: true }
+    PaletteV4:
+      allOf:
+        - $ref: '#/components/schemas/SyncMetadata'
+        - type: object
+          required: [name, categoryColorsJson, itemOrderJson, archived]
+          properties:
+            name: { type: string, minLength: 1, maxLength: 120 }
+            categoryColorsJson: { type: string, maxLength: 100000 }
+            itemOrderJson: { type: string, maxLength: 100000, description: 'JSON array of unique c:<category UUID> and t:<task UUID> keys.' }
+            archived: { type: boolean }
     Category:
       allOf:
         - $ref: '#/components/schemas/SyncMetadata'
@@ -423,6 +435,8 @@ components:
             loadType: { type: string, enum: [focus, light, background, compatible] }
             sortOrder: { type: integer }
             archived: { type: boolean }
+            trashedAt: { type: [string, 'null'], format: date-time, readOnly: true }
+            purgedAt: { type: [string, 'null'], format: date-time, readOnly: true }
     TimeEvent:
       allOf:
         - $ref: '#/components/schemas/SyncMetadata'
@@ -592,7 +606,7 @@ components:
       type: object
       required: [formatVersion, exportedAt, workspaceId, cursor, categoryTrees, categories, events, tasks, taskComments, plans, budgetAllocations, plannedEvents, treeAppearances, palettes]
       properties:
-        formatVersion: { type: integer, const: 4 }
+        formatVersion: { type: integer, const: 5 }
         exportedAt: { type: string, format: date-time }
         workspaceId: { type: string, format: uuid }
         cursor: { type: integer, format: int64 }
@@ -606,6 +620,27 @@ components:
         plannedEvents: { type: array, items: { $ref: '#/components/schemas/PlannedEvent' } }
         treeAppearances: { type: array, items: { $ref: '#/components/schemas/TreeAppearance' } }
         palettes: { type: array, items: { $ref: '#/components/schemas/Palette' } }
+    WorkspaceSnapshotV4:
+      description: 'Explicitly supported backup import format. Palette itemOrderJson is a JSON string containing an array of category/task keys; rowsJson is not required.'
+      type: object
+      required: [formatVersion, exportedAt, workspaceId, cursor, categoryTrees, categories, events, tasks, taskComments, plans, budgetAllocations, plannedEvents, treeAppearances, palettes]
+      properties:
+        formatVersion: { type: integer, const: 4 }
+        exportedAt: { type: string, format: date-time }
+        workspaceId: { type: string, format: uuid }
+        cursor: { type: integer, format: int64 }
+        categoryTrees: { type: array, items: { $ref: '#/components/schemas/CategoryTree' } }
+        categories: { type: array, items: { $ref: '#/components/schemas/Category' } }
+        events: { type: array, items: { $ref: '#/components/schemas/TimeEvent' } }
+        tasks: { type: array, items: { $ref: '#/components/schemas/Task' } }
+        taskComments: { type: array, items: { $ref: '#/components/schemas/TaskComment' } }
+        plans: { type: array, items: { $ref: '#/components/schemas/Plan' } }
+        budgetAllocations: { type: array, items: { $ref: '#/components/schemas/BudgetAllocation' } }
+        plannedEvents: { type: array, items: { $ref: '#/components/schemas/PlannedEvent' } }
+        treeAppearances: { type: array, items: { $ref: '#/components/schemas/TreeAppearance' } }
+        palettes:
+          type: array
+          items: { $ref: '#/components/schemas/PaletteV4' }
     AggregateRow:
       type: object
       required: [categoryTreeId, categoryId, durationSeconds]

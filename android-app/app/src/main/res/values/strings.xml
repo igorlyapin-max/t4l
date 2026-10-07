@@ -8,6 +8,9 @@
     <string name="no_deleted_categorization">No deleted palettes or trees</string>
     <string name="total_minutes">total min</string>
     <string name="reorder_palette">Reorder palette items</string>
+    <string name="add_empty_palette_row">Add empty row</string>
+    <string name="remove_empty_palette_row">Remove empty row</string>
+    <string name="move_to_palette_row">Move to row %1$d</string>
     <string name="restore">Restore</string>
     <string name="restorable_until">Restorable until %1$s</string>
     <string name="restore_period_ended">Restore period ended %1$s</string>
@@ -100,8 +103,6 @@
     <string name="category_tree">Category tree</string>
     <string name="category_tree_unavailable">This category tree is no longer available</string>
     <string name="event_target_unavailable">Choose an active category to change this event’s category or linked task.</string>
-    <string name="restore_archived_categories">Restore hidden categories (%1$d)</string>
-    <string name="restore_archived_categories_message">Restore every hidden category in this tree? This also restores categories you archived separately.</string>
     <string name="no_categories_in_tree">No categories in this tree yet</string>
     <string name="rename_tree_named">Rename category tree “%1$s”</string>
     <string name="delete_tree_named">Delete category tree “%1$s”</string>
@@ -136,7 +137,6 @@
     <string name="planned_event_outside_period">Outside plan period · not counted</string>
     <string name="budget">Budget</string>
     <string name="timeline_plan">Timeline</string>
-    <string name="add_planned_event">Add planned event</string>
     <string name="own_minutes">Own min</string>
     <string name="new_task">New task</string>
     <string name="task_list_settings">Task list settings</string>
@@ -359,5 +359,12 @@
     <string name="drag_to_reorder">Drag to reorder</string>
     <string name="move_up">Move up</string>
     <string name="move_down">Move down</string>
-    <string name="unknown_category">Unknown category</string>
+    <string name="start_now">Start now</string>
+    <string name="done">Done</string>
+    <string name="add_palette_row">Add row</string>
+    <string name="show_archived_categories">Show archived categories</string>
+    <string name="hide_archived_categories">Hide archived categories</string>
+    <string name="quick_time_invalid">Time is outside the plan, ambiguous, or could not be saved</string>
+    <string name="quick_clock_confirm">Create planned event at selected time</string>
+    <string name="palette_swipe_hint">%1$s: %2$s. Swipe right to add, left to skip</string>
 </resources>

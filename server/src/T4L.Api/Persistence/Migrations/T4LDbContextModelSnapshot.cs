@@ -98,6 +98,10 @@ namespace T4L.Api.Persistence.Migrations
                     b.Property<int>("SortOrder")
                         .HasColumnType("integer");
 
+                    b.Property<DateTimeOffset?>("TrashedAt").HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTimeOffset?>("PurgedAt").HasColumnType("timestamp with time zone");
+
                     b.Property<DateTimeOffset>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -184,6 +188,7 @@ namespace T4L.Api.Persistence.Migrations
                     b.Property<DateTimeOffset>("CreatedAt").HasColumnType("timestamp with time zone");
                     b.Property<DateTimeOffset?>("DeletedAt").HasColumnType("timestamp with time zone");
                     b.Property<string>("ItemOrderJson").IsRequired().HasColumnType("text");
+                    b.Property<string>("RowsJson").IsRequired().HasColumnType("text");
                     b.Property<string>("Name").IsRequired().HasColumnType("text");
                     b.Property<DateTimeOffset?>("PurgedAt").HasColumnType("timestamp with time zone");
                     b.Property<long>("Revision").IsConcurrencyToken().HasColumnType("bigint");

@@ -29,6 +29,8 @@ Database migrations run during API startup. Server schema v1 is unsupported and 
 
 `DebugLogging__Level` accepts `Basic` or `Verbose`. Debug logging is off by default; use `Verbose` temporarily. Logs go to structured stdout and to the configured OTLP collector. Stop with `docker compose ... down`; do not add `-v` unless permanent database removal is intended.
 
+`T4L_SYNC_MAX_MUTATIONS_PER_PUSH` accepts an integer from `1` through `1000` (default `100`). Increase it before archiving a larger category subtree; one atomic group cannot span multiple pushes. `/api/v1/bootstrap` advertises the active limit to clients. Lowering it may leave previously queued oversized groups awaiting manual correction, but the API does not partially apply them.
+
 ## Development source build
 
 Development may build an explicitly unverified image:

@@ -55,7 +55,7 @@ class T4LApplication : Application() {
         timelineUiStore = TimelineUiStore(this)
         homeDestinationStore = HomeDestinationStore(this)
         val identity = DeviceIdentity(this)
-        repository = T4LRepository(database, identity, syncStateStore)
+        repository = T4LRepository(database, identity, syncStateStore, syncLimitProvider = { serverSettings.syncMaxMutationsPerPush })
         profileRepository = ProfileRepository(this, database, apiClient, identity, actorInitiallyResolved = !authManager.enabled)
         logger = StructuredLogger(this)
         appLock = AppLockSettings(this)

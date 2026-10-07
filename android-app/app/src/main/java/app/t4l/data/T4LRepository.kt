@@ -24,6 +24,9 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.longOrNull
 
 data class DashboardState(
     val categoryTrees: List<CategoryTreeRow> = emptyList(),
@@ -55,6 +58,7 @@ class T4LRepository(
     private val identity: DeviceIdentity,
     private val syncStateStore: SyncStateStore,
     private val json: Json = Json { ignoreUnknownKeys = true; explicitNulls = false },
+    private val syncLimitProvider: () -> Int = { 100 },
 ) {
     private val dao = database.dao()
     private val workspace = MutableStateFlow(identity.workspaceId)
@@ -157,14 +161,16 @@ class T4LRepository(
     suspend fun addPaletteCategory(id: String, categoryId: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
         requireActiveCategory(categoryId)
         require(categoryId !in contents.categoryColors)
-        val changed = contents.copy(categoryColors = contents.categoryColors + (categoryId to null), order = contents.order + "c:$categoryId")
-        row.copy(categoryColorsJson = changed.colorsJson(), itemOrderJson = changed.orderJson())
+        val changed = contents.copy(categoryColors = contents.categoryColors + (categoryId to null), order = contents.order + "c:$categoryId",
+            rows = contents.rows + PaletteLayoutRow(Uuid7.new(now), listOf("c:$categoryId")))
+        row.copy(categoryColorsJson = changed.colorsJson(), itemOrderJson = changed.orderJson(), rowsJson = changed.rowsJson())
     }
 
     suspend fun removePaletteCategory(id: String, categoryId: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
         require(categoryId in contents.categoryColors)
-        val changed = contents.copy(categoryColors = contents.categoryColors - categoryId, order = contents.order - "c:$categoryId")
-        row.copy(categoryColorsJson = changed.colorsJson(), itemOrderJson = changed.orderJson())
+        val changed = contents.copy(categoryColors = contents.categoryColors - categoryId, order = contents.order - "c:$categoryId",
+            rows = contents.rows.map { line -> line.copy(slots = line.slots.map { if (it == "c:$categoryId") null else it }) })
+        row.copy(categoryColorsJson = changed.colorsJson(), itemOrderJson = changed.orderJson(), rowsJson = changed.rowsJson())
     }
 
     suspend fun setPaletteCategoryColor(id: String, categoryId: String, colorHex: String?, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
@@ -177,7 +183,34 @@ class T4LRepository(
         require(order.distinct().size == order.size)
         require(order.filter { it.startsWith("c:") }.toSet() == contents.categoryColors.keys.map { "c:$it" }.toSet())
         require(order.all { it.startsWith("c:") || it.startsWith("t:") })
-        row.copy(itemOrderJson = contents.copy(order = order).orderJson())
+        val values = order.iterator()
+        val rows = contents.rows.map { line -> line.copy(slots = line.slots.map { if (it == null) null else values.next() }) }
+        val changed = contents.copy(order = order, rows = rows)
+        row.copy(itemOrderJson = changed.orderJson(), rowsJson = changed.rowsJson())
+    }
+
+    suspend fun addPaletteRow(id: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        row.copy(rowsJson = contents.copy(rows = contents.rows + PaletteLayoutRow(Uuid7.new(now), listOf(null))).rowsJson())
+    }
+
+    suspend fun removeEmptyPaletteRow(id: String, rowId: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        require(contents.rows.firstOrNull { it.id == rowId }?.slots?.all { it == null } == true)
+        row.copy(rowsJson = contents.copy(rows = contents.rows.filterNot { it.id == rowId }).rowsJson())
+    }
+
+    suspend fun movePaletteItem(id: String, moving: String, targetRowId: String, targetSlot: Int,
+        now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        require(contents.rows.any { moving in it.slots })
+        val changed = contents.moved(moving, targetRowId, targetSlot)
+        require(changed !== contents)
+        row.copy(itemOrderJson = changed.orderJson(), rowsJson = changed.rowsJson())
+    }
+
+    suspend fun ensurePaletteTaskRows(id: String, taskKeys: List<String>, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, contents ->
+        val missing = taskKeys.distinct().filterNot { it in contents.order }
+        val changed = contents.copy(order = contents.order + missing,
+            rows = contents.rows + missing.mapIndexed { index, key -> PaletteLayoutRow(Uuid7.new(now + index), listOf(key)) })
+        row.copy(itemOrderJson = changed.orderJson(), rowsJson = changed.rowsJson())
     }
 
     suspend fun archivePalette(id: String, now: Long = System.currentTimeMillis()) = updatePalette(id, now) { row, _ ->
@@ -205,12 +238,18 @@ class T4LRepository(
 
     suspend fun archiveCategory(categoryId: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
         val queue = ArrayDeque<String>(); queue += categoryId
+        val subtree = mutableListOf<CategoryRow>()
         while (queue.isNotEmpty()) {
-            val id = queue.removeFirst(); val row = requireNotNull(dao.category(id)); queue.addAll(dao.children(id).map { it.id })
-            pauseTasksForCategory(id, now)
-            val updated = row.copy(archived = true, updatedAtEpochMs = now + 1, syncState = LocalSyncState.PENDING)
-            dao.putCategories(listOf(updated)); replacePending("category", id, outboxForCategory(updated))
+            val id = queue.removeFirst(); val row = requireNotNull(dao.category(id)); queue.addAll(dao.children(id).map { it.id }); subtree += row
         }
+        require(subtree.size <= syncLimitProvider()) { "Category subtree exceeds server sync batch limit (${syncLimitProvider()})." }
+        val groupId = Uuid7.new(now)
+        subtree.forEachIndexed { index, row ->
+            val updated = row.copy(archived = true, trashedAtEpochMs = row.trashedAtEpochMs ?: now,
+                updatedAtEpochMs = now + index, syncState = LocalSyncState.PENDING)
+            dao.putCategories(listOf(updated)); replacePending("category", row.id, outboxForCategory(updated).copy(atomicGroupId = groupId))
+        }
+        subtree.forEach { pauseTasksForCategory(it.id, now, groupId) }
     }
 
     suspend fun archiveCategoryTree(id: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
@@ -229,24 +268,28 @@ class T4LRepository(
         dao.putCategoryTree(restored); replacePending("categoryTree", id, outboxForCategoryTree(restored))
     }
 
-    suspend fun restoreArchivedCategories(treeId: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
-        val tree = requireNotNull(dao.categoryTree(treeId))
-        require(tree.workspaceId == workspaceId && !tree.archived && tree.purgedAtEpochMs == null && tree.deletedAtEpochMs == null)
-        val categories = dao.categoriesInTree(treeId).filter { it.deletedAtEpochMs == null }
-        val byId = categories.associateBy { it.id }
-        fun depth(category: CategoryRow): Int {
-            var parentId = category.parentId
-            val visited = mutableSetOf(category.id)
-            var depth = 0
-            while (parentId != null && visited.add(parentId)) {
-                depth++
-                parentId = byId[parentId]?.parentId
-            }
-            return depth
+    suspend fun restoreCategory(categoryId: String, now: Long = System.currentTimeMillis()) = database.withTransaction {
+        val target = requireNotNull(dao.category(categoryId))
+        val tree = requireNotNull(dao.categoryTree(target.categoryTreeId))
+        require(tree.workspaceId == workspaceId && !tree.archived && tree.purgedAtEpochMs == null)
+        val ancestors = mutableListOf<CategoryRow>()
+        val seen = mutableSetOf<String>()
+        var current: CategoryRow? = target
+        while (current != null && seen.add(current.id)) {
+            ancestors += current
+            current = current.parentId?.let { dao.category(it) }
         }
-        categories.filter { it.archived }.sortedWith(compareBy<CategoryRow> { depth(it) }.thenBy { it.sortOrder }).forEachIndexed { index, category ->
-            val restored = category.copy(archived = false, updatedAtEpochMs = now + index, syncState = LocalSyncState.PENDING)
-            dao.putCategories(listOf(restored)); replacePending("category", restored.id, outboxForCategory(restored))
+        require(current == null) { "Category parent cycle" }
+        require(ancestors.count { it.archived } <= syncLimitProvider()) { "Category restore path exceeds server sync batch limit" }
+        require(ancestors.all { it.workspaceId == workspaceId && it.categoryTreeId == target.categoryTreeId &&
+            it.deletedAtEpochMs == null && it.purgedAtEpochMs == null &&
+            (!it.archived || it.trashedAtEpochMs?.let { archivedAt -> now - archivedAt < 48L * 60 * 60 * 1000 } == true) })
+        val groupId = Uuid7.new(now)
+        ancestors.asReversed().filter { it.archived }.forEachIndexed { index, category ->
+            val restored = category.copy(archived = false, trashedAtEpochMs = null, updatedAtEpochMs = now + index,
+                syncState = LocalSyncState.PENDING)
+            dao.putCategories(listOf(restored))
+            replacePending("category", restored.id, outboxForCategory(restored).copy(atomicGroupId = groupId))
         }
     }
 
@@ -472,8 +515,28 @@ class T4LRepository(
         dao.putBudgetAllocation(row); replacePending("budgetAllocation", row.id, outboxForBudget(row))
     }
 
-    suspend fun resolveConflictUseLocal(clientMutationId: String, editedPayload: String? = null, now: Long = System.currentTimeMillis()) = database.withTransaction {
+    suspend fun isCategoryGroupConflict(clientMutationId: String): Boolean {
+        val conflict = dao.conflict(clientMutationId) ?: return false
+        return conflict.entityType.equals("category", true) && dao.pendingMutation(clientMutationId)?.atomicGroupId != null
+    }
+
+    private fun snapshotEntities(snapshot: String, field: String): Map<String, JsonObject> {
+        val items = json.parseToJsonElement(snapshot).jsonObject[field]?.jsonArray ?: return emptyMap()
+        return items.map { it.jsonObject }.mapNotNull { item -> item["id"]?.jsonPrimitive?.contentOrNull?.let { it to item } }.toMap()
+    }
+
+    suspend fun resolveConflictUseLocal(clientMutationId: String, editedPayload: String? = null, now: Long = System.currentTimeMillis(), snapshot: String? = null) = database.withTransaction {
         val conflict = requireNotNull(dao.conflict(clientMutationId))
+        val pending = dao.pendingMutation(clientMutationId)
+        if (pending?.atomicGroupId != null && conflict.entityType.equals("category", true)) {
+            val canonical = snapshotEntities(requireNotNull(snapshot), "categories")
+            dao.pendingAtomicGroup(pending.atomicGroupId).forEach { member ->
+                val revision = canonical[member.entityId]?.get("revision")?.jsonPrimitive?.longOrNull ?: 0
+                dao.retryMutationWithRevision(member.clientMutationId, revision)
+            }
+            dao.deleteConflict(clientMutationId)
+            return@withTransaction
+        }
         val payload = editedPayload ?: conflict.localPayloadJson
         require(runCatching { json.parseToJsonElement(payload) is JsonObject }.getOrDefault(false))
         val localStatus = (json.parseToJsonElement(payload) as JsonObject)["status"]?.jsonPrimitive?.contentOrNull
@@ -489,8 +552,30 @@ class T4LRepository(
         dao.deleteConflict(clientMutationId)
     }
 
-    suspend fun resolveConflictUseServer(clientMutationId: String) = database.withTransaction {
+    suspend fun resolveConflictUseServer(clientMutationId: String, snapshot: String? = null) = database.withTransaction {
         val conflict = requireNotNull(dao.conflict(clientMutationId))
+        val pending = dao.pendingMutation(clientMutationId)
+        if (pending?.atomicGroupId != null && conflict.entityType.equals("category", true)) {
+            val categories = snapshotEntities(requireNotNull(snapshot), "categories")
+            val tasks = snapshotEntities(requireNotNull(snapshot), "tasks")
+            val events = snapshotEntities(snapshot, "events")
+            val group = dao.pendingAtomicGroup(pending.atomicGroupId)
+            val dependents = dao.pendingDependents(pending.atomicGroupId)
+            for (member in group + dependents) {
+                val canonical = when (member.entityType.lowercase()) {
+                    "category" -> categories[member.entityId]
+                    "task" -> tasks[member.entityId]
+                    "event" -> events[member.entityId]
+                    else -> null
+                }
+                if (canonical == null) deleteLocalEntity(dao, member.entityType, member.entityId)
+                else applyApiChange(dao, conflict.workspaceId, ApiChange(0, member.entityType, member.entityId,
+                    canonical["revision"]?.jsonPrimitive?.longOrNull ?: 0, false, canonical))
+            }
+            dao.deleteMutations((group + dependents).map { it.clientMutationId })
+            dao.deleteConflict(clientMutationId)
+            return@withTransaction
+        }
         dao.deletePendingForEntity(conflict.entityType, conflict.entityId)
         conflict.linkedEventId?.let { eventId ->
             dao.deletePendingForEntity("event", eventId)
@@ -506,9 +591,12 @@ class T4LRepository(
     }
 
     suspend fun retryRejected(clientMutationId: String, editedPayload: String? = null) = database.withTransaction {
+        val current = requireNotNull(dao.pendingMutation(clientMutationId))
+        require(current.atomicGroupId == null || !dao.hasConflictForAtomicGroup(current.atomicGroupId)) {
+            "Resolve the complete atomic group conflict first."
+        }
         if (editedPayload != null) {
             require(runCatching { json.parseToJsonElement(editedPayload) is JsonObject }.getOrDefault(false))
-            val current = requireNotNull(dao.pendingMutation(clientMutationId))
             dao.putOutbox(current.copy(payloadJson = editedPayload, attemptCount = 0, lastError = null))
         } else dao.retryMutation(clientMutationId)
     }
@@ -546,26 +634,27 @@ class T4LRepository(
         return task.categoryId?.let { dao.category(it) }
             ?: task.parentTaskId?.let { dao.task(it) }?.let { effectiveCategory(it, visited) }
     }
-    private suspend fun closeTaskInterval(task: TaskRow, now: Long, groupId: String?) {
+    private suspend fun closeTaskInterval(task: TaskRow, now: Long, groupId: String?, dependsOnGroupId: String? = null) {
         val category = effectiveCategory(task) ?: return
         val latest = dao.latestEventInTree(category.categoryTreeId) ?: return
         if (latest.taskId != task.id || latest.occurredAtEpochMs > now) return
         val stopAt = now
         val event = EventRow(Uuid7.new(stopAt + 1), workspaceId, category.categoryTreeId, category.id, null,
             stopAt, ZoneId.systemDefault().id, "manual", updatedAtEpochMs = stopAt)
-        dao.putEvent(event); dao.enqueue(outboxForEvent(event, groupId))
+        dao.putEvent(event); dao.enqueue(outboxForEvent(event, groupId).copy(dependsOnGroupId = dependsOnGroupId))
     }
-    private suspend fun pauseTasksForCategory(categoryId: String, now: Long) {
+    private suspend fun pauseTasksForCategory(categoryId: String, now: Long, dependsOnGroupId: String? = null) {
         dao.tasksForCategory(categoryId).filter { it.status == "active" }.forEach { task ->
             val paused = task.copy(status = "paused", updatedAtEpochMs = now, syncState = LocalSyncState.PENDING)
             val groupId = if (task.revision > 0) Uuid7.new(now) else null
-            closeTaskInterval(task, now, groupId)
-            dao.putTask(paused); replacePending("task", task.id, outboxForTask(paused, groupId))
+            closeTaskInterval(task, now, groupId, dependsOnGroupId)
+            dao.putTask(paused); replacePending("task", task.id, outboxForTask(paused, groupId).copy(dependsOnGroupId = dependsOnGroupId))
         }
     }
     private suspend fun validateEventTarget(treeId: String, categoryId: String?, taskId: String?, requireActive: Boolean = false) {
         require(dao.categoryTree(treeId)?.let { it.workspaceId == workspaceId && it.deletedAtEpochMs == null && (!requireActive || !it.archived && it.purgedAtEpochMs == null) } == true)
         categoryId?.let { require(dao.category(it)?.let { category -> category.workspaceId == workspaceId && category.categoryTreeId == treeId && category.deletedAtEpochMs == null && (!requireActive || !category.archived) } == true) }
+        if (requireActive && categoryId != null) requireActiveCategory(categoryId)
         taskId?.let { require(dao.task(it)?.let { task -> task.workspaceId == workspaceId && task.deletedAtEpochMs == null && effectiveCategory(task)?.id == categoryId } == true) }
     }
     private suspend fun requireActiveCategory(id: String) {
@@ -573,6 +662,14 @@ class T4LRepository(
         require(category.workspaceId == workspaceId && !category.archived && category.deletedAtEpochMs == null)
         val tree = requireNotNull(dao.categoryTree(category.categoryTreeId))
         require(tree.workspaceId == workspaceId && !tree.archived && tree.purgedAtEpochMs == null && tree.deletedAtEpochMs == null)
+        val visited = mutableSetOf(category.id)
+        var parentId = category.parentId
+        while (parentId != null) {
+            require(visited.add(parentId)) { "Category parent cycle" }
+            val parent = requireNotNull(dao.category(parentId))
+            require(parent.workspaceId == workspaceId && parent.categoryTreeId == category.categoryTreeId && !parent.archived && parent.deletedAtEpochMs == null)
+            parentId = parent.parentId
+        }
     }
     private suspend fun replacePending(type: String, id: String, row: OutboxRow) {
         require(!dao.hasPendingAtomicForEntity(type, id)) { "An atomic task transition is awaiting sync." }
@@ -592,7 +689,7 @@ class T4LRepository(
     private fun outboxForCategoryTree(r: CategoryTreeRow) = outbox("categoryTree", r.id, r.revision, buildJsonObject { put("name", r.name); put("role", r.role); put("sortOrder", r.sortOrder); put("archived", r.archived) }, r.updatedAtEpochMs)
     private fun outboxForTreeAppearance(r: TreeAppearanceRow) = outbox("treeAppearance", r.id, r.revision, buildJsonObject { put("categoryTreeId", r.categoryTreeId); put("colorHex", r.colorHex) }, r.updatedAtEpochMs)
     private fun outboxForPalette(r: PaletteRow) = outbox("palette", r.id, r.revision, buildJsonObject {
-        put("name", r.name); put("categoryColorsJson", r.categoryColorsJson); put("itemOrderJson", r.itemOrderJson); put("archived", r.archived)
+        put("name", r.name); put("categoryColorsJson", r.categoryColorsJson); put("itemOrderJson", r.itemOrderJson); put("rowsJson", r.rowsJson); put("archived", r.archived)
     }, r.updatedAtEpochMs)
     private fun outboxForCategory(r: CategoryRow) = outbox("category", r.id, r.revision, buildJsonObject { put("categoryTreeId", r.categoryTreeId); putNullable("parentId", r.parentId); put("name", r.name); put("loadType", r.loadType); put("sortOrder", r.sortOrder); put("archived", r.archived) }, r.updatedAtEpochMs)
     private fun outboxForEvent(r: EventRow, groupId: String? = null) = outbox("event", r.id, r.revision, buildJsonObject { put("categoryTreeId", r.categoryTreeId); putNullable("categoryId", r.categoryId); putNullable("taskId", r.taskId); put("occurredAt", Instant.ofEpochMilli(r.occurredAtEpochMs).toString()); put("zoneId", r.zoneId); put("source", r.source); putNullable("note", r.note) }, r.updatedAtEpochMs, groupId = groupId)

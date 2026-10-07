@@ -16,14 +16,16 @@ internal static class PaletteValidation
     {
         if (string.IsNullOrWhiteSpace(palette.Name) || palette.Name.Length > 120 ||
             palette.CategoryColorsJson is null or { Length: > 100_000 } ||
-            palette.ItemOrderJson is null or { Length: > 100_000 })
+            palette.ItemOrderJson is null or { Length: > 100_000 } ||
+            palette.RowsJson is null or { Length: > 200_000 })
             throw new ArgumentException("invalid_palette");
 
         try
         {
             using var colors = JsonDocument.Parse(palette.CategoryColorsJson);
             using var order = JsonDocument.Parse(palette.ItemOrderJson);
-            if (colors.RootElement.ValueKind != JsonValueKind.Object || order.RootElement.ValueKind != JsonValueKind.Array)
+            using var rows = JsonDocument.Parse(palette.RowsJson);
+            if (colors.RootElement.ValueKind != JsonValueKind.Object || order.RootElement.ValueKind != JsonValueKind.Array || rows.RootElement.ValueKind != JsonValueKind.Array)
                 throw new ArgumentException("invalid_palette");
 
             var categoryIds = new HashSet<Guid>();
@@ -50,6 +52,26 @@ internal static class PaletteValidation
                 else taskIds.Add(id);
             }
             if (!orderedCategories.SetEquals(categoryIds)) throw new ArgumentException("invalid_palette_order");
+            var rowIds = new HashSet<string>(StringComparer.Ordinal);
+            var layoutKeys = new List<string>();
+            var rowCount = 0;
+            foreach (var row in rows.RootElement.EnumerateArray())
+            {
+                if (++rowCount > MaxOrderItems || row.ValueKind != JsonValueKind.Object ||
+                    !row.TryGetProperty("id", out var rowId) || rowId.ValueKind != JsonValueKind.String ||
+                    string.IsNullOrWhiteSpace(rowId.GetString()) || !rowIds.Add(rowId.GetString()!) ||
+                    !row.TryGetProperty("slots", out var slots) || slots.ValueKind != JsonValueKind.Array)
+                    throw new ArgumentException("invalid_palette_rows");
+                var slotCount = 0;
+                foreach (var slot in slots.EnumerateArray())
+                {
+                    if (++slotCount > MaxOrderItems || slot.ValueKind is not (JsonValueKind.String or JsonValueKind.Null))
+                        throw new ArgumentException("invalid_palette_rows");
+                    if (slot.ValueKind == JsonValueKind.String) layoutKeys.Add(slot.GetString()!);
+                }
+            }
+            if (layoutKeys.Count != orderKeys.Count || !layoutKeys.SequenceEqual(order.RootElement.EnumerateArray().Select(x => x.GetString())))
+                throw new ArgumentException("invalid_palette_rows");
             return new PaletteContents(categoryIds, taskIds);
         }
         catch (JsonException exception)

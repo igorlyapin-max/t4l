@@ -21,7 +21,7 @@ class DatabaseConverters {
         OutboxRow::class, SyncCursorRow::class, ConflictRow::class,
         UserProfileRow::class, ProfileMutationRow::class, AvatarMutationRow::class, PersonalConflictRow::class,
     ],
-    version = 10,
+    version = 13,
     exportSchema = true,
 )
 @TypeConverters(DatabaseConverters::class)
@@ -33,7 +33,52 @@ abstract class T4LDatabase : RoomDatabase() {
             context.applicationContext,
             T4LDatabase::class.java,
             "t4l.db",
-        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10).fallbackToDestructiveMigrationFrom(true, 1).build()
+        ).addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13).fallbackToDestructiveMigrationFrom(true, 1).build()
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE outbox ADD COLUMN dependsOnGroupId TEXT")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_outbox_atomicGroupId ON outbox(atomicGroupId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS index_outbox_dependsOnGroupId ON outbox(dependsOnGroupId)")
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE palettes ADD COLUMN rowsJson TEXT NOT NULL DEFAULT '[]'")
+                db.query("SELECT id,itemOrderJson FROM palettes").use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val id = cursor.getString(0)
+                        val order = org.json.JSONArray(cursor.getString(1))
+                        val rows = org.json.JSONArray()
+                        for (index in 0 until order.length()) rows.put(org.json.JSONObject()
+                            .put("id", java.util.UUID.nameUUIDFromBytes("$id:$index".toByteArray()).toString())
+                            .put("slots", org.json.JSONArray().put(order.getString(index))))
+                        db.execSQL("UPDATE palettes SET rowsJson=? WHERE id=?", arrayOf(rows.toString(), id))
+                    }
+                }
+                db.query("SELECT clientMutationId,entityId,payloadJson FROM outbox WHERE lower(entityType)='palette' AND operation='upsert'").use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val payload = org.json.JSONObject(cursor.getString(2))
+                        val order = payload.optJSONArray("itemOrderJson") ?: org.json.JSONArray(payload.optString("itemOrderJson", "[]"))
+                        val rows = org.json.JSONArray()
+                        for (index in 0 until order.length()) rows.put(org.json.JSONObject()
+                            .put("id", java.util.UUID.nameUUIDFromBytes("${cursor.getString(1)}:$index".toByteArray()).toString())
+                            .put("slots", org.json.JSONArray().put(order.getString(index))))
+                        payload.put("rowsJson", rows.toString())
+                        db.execSQL("UPDATE outbox SET payloadJson=? WHERE clientMutationId=?", arrayOf(payload.toString(), cursor.getString(0)))
+                    }
+                }
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE categories ADD COLUMN trashedAtEpochMs INTEGER")
+                db.execSQL("ALTER TABLE categories ADD COLUMN purgedAtEpochMs INTEGER")
+                db.execSQL("UPDATE categories SET trashedAtEpochMs=? WHERE archived=1 AND deletedAtEpochMs IS NULL", arrayOf(System.currentTimeMillis()))
+            }
+        }
 
         val MIGRATION_9_10 = object : Migration(9, 10) {
             override fun migrate(db: SupportSQLiteDatabase) {

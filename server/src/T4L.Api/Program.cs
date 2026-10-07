@@ -45,6 +45,9 @@ if (!insecure)
 builder.Services.AddAuthorization();
 
 var debugOptions = builder.Configuration.GetSection("DebugLogging").Get<DiagnosticLoggingOptions>() ?? new();
+var syncMaxMutationsPerPush = builder.Configuration.GetValue<int?>("Sync:MaxMutationsPerPush") ?? 100;
+if (syncMaxMutationsPerPush is < 1 or > 1000)
+    throw new InvalidOperationException("Sync__MaxMutationsPerPush must be between 1 and 1000.");
 if (!new[] { "Basic", "Verbose" }.Contains(debugOptions.Level, StringComparer.OrdinalIgnoreCase))
 {
     throw new InvalidOperationException("DebugLogging__Level must be Basic or Verbose.");
@@ -120,7 +123,7 @@ api.MapGet("/bootstrap", async (ICurrentActor currentActor, T4LDbContext db, Can
     var actor = await currentActor.GetAsync(ct);
     var workspaces = await db.Workspaces.AsNoTracking().Where(x => actor.Workspaces.Keys.Contains(x.Id))
         .OrderBy(x => x.Name).Select(x => new { workspaceId = x.Id, x.Name }).ToArrayAsync(ct);
-    return Results.Ok(new { userId = actor.UserId, defaultWorkspaceId = workspaces.FirstOrDefault()?.workspaceId, workspaces = workspaces.Select(x => new { x.workspaceId, x.Name, role = actor.Workspaces[x.workspaceId].ToString().ToLowerInvariant() }) });
+    return Results.Ok(new { userId = actor.UserId, defaultWorkspaceId = workspaces.FirstOrDefault()?.workspaceId, syncMaxMutationsPerPush, workspaces = workspaces.Select(x => new { x.workspaceId, x.Name, role = actor.Workspaces[x.workspaceId].ToString().ToLowerInvariant() }) });
 });
 api.MapGet("/me/profile", (UserProfileService profiles, CancellationToken ct) => profiles.GetAsync(ct));
 api.MapPatch("/me/profile", async (UserProfilePatchRequest request, UserProfileService profiles, CancellationToken ct) =>
@@ -325,7 +328,7 @@ api.MapGet("/sync/snapshot", async (Guid workspaceId, T4LDbContext db, Workspace
         .MaxAsync(x => (long?)x.Sequence, ct) ?? 0;
     return Results.Ok(new
     {
-        formatVersion = 4,
+        formatVersion = 5,
         exportedAt = DateTimeOffset.UtcNow,
         workspaceId,
         cursor,

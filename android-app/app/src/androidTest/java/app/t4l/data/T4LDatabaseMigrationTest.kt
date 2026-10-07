@@ -165,6 +165,56 @@ class T4LDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrate10To11GrantsArchivedCategoriesFreshRetention() {
+        helper.createDatabase(TEST_DB_V11, 10).apply {
+            execSQL("INSERT INTO categories (id,workspaceId,categoryTreeId,name,loadType,sortOrder,archived,revision,updatedAtEpochMs,syncState) VALUES ('category','workspace','tree','Work','light',0,1,1,1000,'SYNCED')")
+            close()
+        }
+        val before = System.currentTimeMillis()
+        helper.runMigrationsAndValidate(TEST_DB_V11, 11, true, T4LDatabase.MIGRATION_10_11).use { db ->
+            db.query("SELECT trashedAtEpochMs,purgedAtEpochMs FROM categories WHERE id='category'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(true, cursor.getLong(0) >= before)
+                assertEquals(true, cursor.isNull(1))
+            }
+        }
+    }
+
+    @Test
+    fun migrate11To12PreservesPaletteOrderAndPendingMutation() {
+        helper.createDatabase(TEST_DB_V12, 11).apply {
+            execSQL("INSERT INTO palettes (id,workspaceId,name,categoryColorsJson,itemOrderJson,archived,revision,updatedAtEpochMs,syncState) VALUES ('palette','workspace','Default','{}','[\"c:category\"]',0,1,1000,'PENDING')")
+            execSQL("INSERT INTO outbox (clientMutationId,clientId,workspaceId,entityType,entityId,operation,baseRevision,payloadJson,createdAtEpochMs,attemptCount) VALUES ('mutation','client','workspace','palette','palette','upsert',1,'{\"name\":\"Default\",\"itemOrderJson\":\"[\\\"c:category\\\"]\"}',1000,0)")
+            close()
+        }
+        helper.runMigrationsAndValidate(TEST_DB_V12, 12, true, T4LDatabase.MIGRATION_11_12).use { db ->
+            db.query("SELECT rowsJson FROM palettes WHERE id='palette'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(true, cursor.getString(0).contains("c:category"))
+            }
+            db.query("SELECT payloadJson FROM outbox WHERE clientMutationId='mutation'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals(true, cursor.getString(0).contains("rowsJson"))
+            }
+        }
+    }
+
+    @Test
+    fun migrate12To13PreservesPendingGroupAndAddsDependency() {
+        helper.createDatabase(TEST_DB_V13, 12).apply {
+            execSQL("INSERT INTO outbox (clientMutationId,clientId,workspaceId,entityType,entityId,operation,baseRevision,payloadJson,createdAtEpochMs,attemptCount,atomicGroupId) VALUES ('mutation','client','workspace','category','category','upsert',1,'{}',1000,0,'group')")
+            close()
+        }
+        helper.runMigrationsAndValidate(TEST_DB_V13, 13, true, T4LDatabase.MIGRATION_12_13).use { db ->
+            db.query("SELECT atomicGroupId,dependsOnGroupId FROM outbox WHERE clientMutationId='mutation'").use { cursor ->
+                check(cursor.moveToFirst())
+                assertEquals("group", cursor.getString(0))
+                assertEquals(true, cursor.isNull(1))
+            }
+        }
+    }
+
     private companion object {
         const val TEST_DB = "migration-test"
         const val TEST_DB_V4 = "migration-test-v4"
@@ -174,5 +224,8 @@ class T4LDatabaseMigrationTest {
         const val TEST_DB_V8 = "migration-test-v8"
         const val TEST_DB_V9 = "migration-test-v9"
         const val TEST_DB_V10 = "migration-test-v10"
+        const val TEST_DB_V11 = "migration-test-v11"
+        const val TEST_DB_V12 = "migration-test-v12"
+        const val TEST_DB_V13 = "migration-test-v13"
     }
 }

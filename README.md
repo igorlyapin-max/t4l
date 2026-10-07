@@ -49,11 +49,13 @@ The Android server URL and sync delay are editable in `Settings > Network`. A co
 
 An active-to-inactive task transition is a sync atomic group: the task upsert and, when the task owns the latest interval in its category tree, a taskless closing event share `atomicGroupId`. The server applies both or neither. A single task transition from older clients is rejected with `atomic_group_required`; legacy transition writes are not supported. Conflicted groups retain the closure event locally until the user resolves the task conflict.
 
+Category-subtree archive and ancestor-path restore are atomic category groups. Archive must include every descendant; standalone parent archive is rejected. Android keeps a conflicted category group and its dependent task pauses in the outbox until the user chooses the local or server version. Independent mutations continue syncing. `Sync__MaxMutationsPerPush` (`T4L_SYNC_MAX_MUTATIONS_PER_PUSH` in Compose) accepts `1..1000`, defaults to `100`, and is advertised by `/bootstrap`; Android rejects a larger subtree before changing local state. When the server limit decreases after a group was queued, the entire group is rejected without partial server writes. Older clients that send non-atomic parent archives are not supported.
+
 `Categorization > Deleted` retains archived trees for 30 days from the server-confirmed deletion time. Trees can be restored before expiry or permanently removed from the restorable list after their pending changes sync; the server purges expired entries hourly. Historical tree/category labels remain as read-only reference metadata so factual events and tasks keep their labels; this is an irreversible logical purge, not physical erasure of referenced rows. `Planner > Archived` shows read-only plan details and permits restore or deletion; deleting a plan also removes its budgets and planned events, never factual events. Time distribution reports include only active category trees. Android rejects malformed plan dates from sync rather than writing epoch-zero values, and repairs already-invalid local plan periods from a valid canonical snapshot where available.
 
 `Categorization > Palettes` stores synced flat category selections, per-category display color overrides, and a mixed category/task order. Category-tree border colors use a separate synced `treeAppearance` record; palette colors never change timeline event borders. Deleted palettes share the 30-day restore/purge policy. `Planner` remembers one active plan per workspace and shows only its details; opening the plan picker clears that selection. Tracking and Planner share device-local tree visibility and tree-name settings, while panel height is remembered separately. A shared palette selection has an optional per-plan override; palette dates stay local to tracking or the current plan. Hidden trees remain available for palette quick entry and produce a warning after successful event creation.
 
-Restoring a tree does not alter the archived state of its categories. Trees archived by older clients may have every category archived; the tree editor then offers a confirmed `Restore hidden categories` action. Original individual archive choices cannot be reconstructed from old data, so this action deliberately restores all hidden categories only when the user requests it.
+Restoring a tree does not alter the archived state of its categories. The tree editor can reveal archived categories and restore each one separately; restoring a descendant also restores its required ancestor path. Original individual archive choices from older clients cannot be reconstructed automatically.
 
 Settings are split into `Network`, `Backup`, `Security`, `Diagnostics`, and `Language`. Language is an app-local English/Russian choice; before the first explicit choice Android follows the system locale.
 
@@ -76,17 +78,17 @@ Release builds accept HTTPS only. Debug builds additionally accept literal loopb
 ## Schema compatibility
 
 - Server schema v1 is intentionally unsupported. If startup reports `legacy_schema_not_supported`, recreate the development database instead of applying a lossy conversion.
-- Android database v1 is reset destructively. Database v2 migrates to v3 while preserving current entities and sync conflicts; v3 migrates to v4 with the user profile cache and offline profile/avatar queues; v4 migrates to v5 with profile base snapshots and explicit personal conflicts.
-- Backup import accepts only `formatVersion: 4` and validates the complete graph before a single transactional import.
+- Android database v1 is reset destructively. Versions v2–v10 retain the documented incremental migrations; v10→v11 grants previously archived categories a fresh 48-hour window, v11→v12 converts palette order and pending mutations to stable rows with nullable slots, and v12→v13 records outbox dependencies for atomic category archives.
+- Backup export uses `formatVersion: 5`; import accepts v4 (upgraded to rows) and v5, validating the complete graph before a single transactional import.
 
 ## Product model
 
-- `CategoryTree` is a classification tree such as Activity or Location. Categories are recursive and can be archived without deleting historical events.
+- `CategoryTree` is a classification tree such as Activity or Location. Categories are recursive; archived categories can be restored individually for 48 hours, after which they are hidden permanently while historical names/references remain. Restoring a descendant restores only its required ancestor path.
 - Actual `TimeEvent` and `PlannedEvent` records are instantaneous switches; intervals end at the next event in the same tree.
 - A `Task` is independent from categories, belongs to either a category or a parent task, and supports active, paused, completed, and cancelled states plus append-only comments.
 - A `Plan` covers an arbitrary `[startsAt, endsAt)` period and contains independent budget allocations and timeline events; either part can be empty. Plans may overlap. Own and descendant-inclusive timeline durations are calculated independently for each category tree in milliseconds; budget totals are separate user-entered values.
 - Task time is the sum of factual intervals directly tagged with that task, without subtasks. Android appends a taskless event in the same category tree when pausing, completing, or cancelling a currently tracked task; other sync clients must do the same in the same logical operation. The task-time projection reports signed `spentMillis - estimateMinutes * 60000`.
-- Backup export/import uses `formatVersion: 4`; v3 and earlier backup formats are intentionally unsupported. Deploy server and Android together because the sync contract now includes `palette` and `treeAppearance`.
+- Palette layout is server-canonical `rowsJson`: each row has a stable ID and nullable cells, including empty rows. `itemOrderJson` is the derived non-null order. Existing palettes migrate once; deploy the server migration before installing the new Android client. Older sync clients are not supported for palette editing; v3 and earlier backup formats remain unsupported.
 
 ## Current MVP boundaries
 
